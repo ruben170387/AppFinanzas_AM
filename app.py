@@ -16,10 +16,8 @@ def conectar_excel():
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         
-        # 1. Cargamos la info de los secretos
         creds_info = dict(st.secrets["gcp_service_account"])
         
-        # 2. LIMPIEZA AGRESIVA DE LA CLAVE
         pk = creds_info["private_key"]
         if "\\n" in pk:
             pk = pk.replace("\\n", "\n")
@@ -27,17 +25,14 @@ def conectar_excel():
         pk = pk.strip()
         creds_info["private_key"] = pk
         
-        # 3. Autorización
         creds = Credentials.from_service_account_info(creds_info, scopes=scope)
         client = gspread.authorize(creds)
         
-        # 4. Abrir Excel
         return client.open("App_Finanzas")
     except Exception as e:
         st.error(f"❌ Error de conexión: {e}")
         return None
 
-# Intentamos obtener la conexión
 sh = conectar_excel()
 
 if sh is None:
@@ -65,25 +60,17 @@ def limpiar_numeros(serie):
     return pd.to_numeric(serie.astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
 
 # --- BLOQUE 1: CALCULADORA Y PREDICCIÓN (Lógica Dinámica) ---
-# 1. Buscamos automáticamente la fila del ahorro (busca "Ahorro", "%" o "Objetivo")
-# Al llamarse "objetivo ahorro", este radar lo encontrará sin problemas en la fila 4.
 es_ahorro = df_ingresos.iloc[:, 0].astype(str).str.contains("Ahorro|%|Objetivo", case=False, na=False)
 
 if es_ahorro.any():
     porcentaje_ahorro = limpiar_numeros(pd.Series([df_ingresos.loc[es_ahorro].iloc[0, 1]]))[0]
 else:
-    porcentaje_ahorro = 20.0  # Valor por defecto si no lo encuentra
+    porcentaje_ahorro = 20.0  
 
-# 2. Sumamos todos los ingresos (filas que NO son la del ahorro)
 total_ingresos = limpiar_numeros(df_ingresos.loc[~es_ahorro].iloc[:, 1]).sum()
-
-# 3. Sumamos los gastos fijos
 total_fijos = limpiar_numeros(df_fijos['Importe']).sum()
-
-# Calculamos el objetivo de ahorro
 ahorro_objetivo = total_ingresos * (porcentaje_ahorro / 100) 
 
-# 4. Calculamos los gastos variables
 if not df_movimientos.empty:
     df_movimientos['Importe'] = limpiar_numeros(df_movimientos['Importe'])
     gastos_variables_totales = df_movimientos['Importe'].sum()
@@ -113,7 +100,6 @@ datos_barras = pd.DataFrame({
     "Cantidad": [total_ingresos, total_fijos, gastos_variables_totales, ahorro_objetivo, max(0, disponible_mes)]
 })
 
-# Creamos la gráfica
 fig = px.bar(
     datos_barras, 
     x="Grupo", 
@@ -129,30 +115,24 @@ fig = px.bar(
     }
 )
 
-# --- AJUSTES ESPECÍFICOS PARA MÓVIL (Mover leyenda abajo y ampliar márgenes) ---
 fig.update_traces(texttemplate='%{text:.1f} €', textposition='inside')
 
 fig.update_layout(
     xaxis_title="", 
     yaxis_title="Euros (€)",
-    # 1. MOVER LEYENDA ABAJO (Configuración horizontal centrada)
     legend=dict(
-        orientation="h",       # Horizontal
-        yanchor="bottom",      # Ancla en la parte inferior
-        y=-0.2,                # Posición por debajo del eje X
-        xanchor="center",      # Centrada horizontalmente
+        orientation="h",       
+        yanchor="bottom",      
+        y=-0.2,                
+        xanchor="center",      
         x=0.5,
-        title=""               # Quitamos el título de la leyenda para ahorrar espacio
+        title=""               
     ),
-    # 2. OPTIMIZAR MÁRGENES (Reducimos espacios vacíos alrededor)
     margin=dict(t=10, b=10, l=10, r=10),
-    # Fijamos una altura mínima para que no se vea aplastada
     height=450,
-    # Hacemos que los textos de las barras sean legibles
     uniformtext=dict(mode="hide", minsize=10)
 )
 
-# Mostramos la gráfica forzando que ocupe todo el ancho disponible
 st.plotly_chart(fig, use_container_width=True)
 
 
@@ -176,25 +156,72 @@ with st.form("nuevo_gasto", clear_on_submit=True):
         else:
             st.error("Rellena concepto e importe.")
 
-# --- BLOQUE 3: CONFIGURACIÓN ---
+# --- BLOQUE 3: CONFIGURACIÓN (VERSIÓN MÓVIL 100% SEGURA) ---
 with st.expander("⚙️ Editar Sueldos, Ahorro y Gastos Fijos"):
-    st.subheader("Sueldos y % Ahorro")
-    st.info("💡 Tu Excel busca las palabras 'Objetivo', 'Ahorro' o '%' para encontrar el porcentaje.")
-    edit_ingresos = st.data_editor(df_ingresos, use_container_width=True, key="ed_ing", hide_index=True)
-    if st.button("Actualizar Sueldos y % Ahorro"):
-        ws_config.update([edit_ingresos.columns.values.tolist()] + edit_ingresos.values.tolist())
-        st.success("Configuración actualizada.")
-        st.rerun()
+    
+    st.markdown("### 1️⃣ Sueldos y % Ahorro")
+    # Extraemos los valores actuales del Excel para mostrarlos por defecto en el formulario
+    sueldo_1_actual = limpiar_numeros(pd.Series([df_ingresos.iloc[0, 1]]))[0] if len(df_ingresos) > 0 else 0.0
+    sueldo_2_actual = limpiar_numeros(pd.Series([df_ingresos.iloc[1, 1]]))[0] if len(df_ingresos) > 1 else 0.0
+    
+    with st.form("form_ingresos_ahorro"):
+        nuevo_s1 = st.number_input("Sueldo 1 (€)", value=float(sueldo_1_actual), step=50.0, format="%.2f")
+        nuevo_s2 = st.number_input("Sueldo 2 (€)", value=float(sueldo_2_actual), step=50.0, format="%.2f")
+        nuevo_ahorro = st.number_input("Objetivo Ahorro (%)", value=float(porcentaje_ahorro), step=1.0, format="%.2f")
+        
+        if st.form_submit_button("💾 Guardar Sueldos y Ahorro"):
+            nuevos_datos_config = [
+                [df_ingresos.columns[0], df_ingresos.columns[1]], 
+                [df_ingresos.iloc[0, 0] if len(df_ingresos) > 0 else "Sueldo 1", nuevo_s1],
+                [df_ingresos.iloc[1, 0] if len(df_ingresos) > 1 else "Sueldo 2", nuevo_s2],
+                ["Objetivo Ahorro", nuevo_ahorro]
+            ]
+            ws_config.clear() 
+            ws_config.update(nuevos_datos_config) 
+            st.success("✅ Sueldos y ahorro actualizados correctamente.")
+            st.rerun()
 
     st.divider()
+
+    st.markdown("### 2️⃣ Gestión de Gastos Fijos")
+    if not df_fijos.empty:
+        st.dataframe(df_fijos, use_container_width=True, hide_index=True)
+    else:
+        st.info("No tienes gastos fijos registrados.")
+
+    col_add, col_del = st.columns(2)
     
-    st.subheader("Gastos Fijos")
-    st.info("💡 Para añadir: escribe en la última fila vacía. Para borrar: marca la casilla gris a la izquierda y pulsa borrar.")
-    edit_fijos = st.data_editor(df_fijos, num_rows="dynamic", use_container_width=True, key="ed_fij", hide_index=False)
-    if st.button("Actualizar Gastos Fijos"):
-        ws_fijos.update([edit_fijos.columns.values.tolist()] + edit_fijos.values.tolist())
-        st.success("Gastos fijos actualizados.")
-        st.rerun()
+    with col_add:
+        st.markdown("**Añadir Nuevo**")
+        with st.form("form_add_fijo", clear_on_submit=True):
+            nuevo_concepto_fijo = st.text_input("Nombre (Ej. Luz)")
+            nuevo_importe_fijo = st.number_input("Importe (€)", min_value=0.0, step=1.0, format="%.2f")
+            if st.form_submit_button("➕ Añadir"):
+                if nuevo_concepto_fijo and nuevo_importe_fijo > 0:
+                    ws_fijos.append_row([nuevo_concepto_fijo, nuevo_importe_fijo])
+                    st.success("✅ Añadido.")
+                    st.rerun()
+                else:
+                    st.error("Faltan datos.")
+
+    with col_del:
+        st.markdown("**Borrar Existente**")
+        if not df_fijos.empty:
+            with st.form("form_del_fijo"):
+                gasto_a_borrar = st.selectbox("Selecciona Gasto", df_fijos.iloc[:, 0].tolist())
+                if st.form_submit_button("🗑️ Borrar"):
+                    df_fijos_limpio = df_fijos[df_fijos.iloc[:, 0] != gasto_a_borrar]
+                    ws_fijos.clear() 
+                    
+                    if df_fijos_limpio.empty:
+                        ws_fijos.update([df_fijos.columns.values.tolist()]) 
+                    else:
+                        ws_fijos.update([df_fijos_limpio.columns.values.tolist()] + df_fijos_limpio.values.tolist())
+                    
+                    st.success("✅ Borrado.")
+                    st.rerun()
+        else:
+            st.write("Nada que borrar.")
 
 # --- BLOQUE 4: HISTORIAL ---
 if st.checkbox("Mostrar últimos 5 movimientos"):
