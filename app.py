@@ -54,7 +54,6 @@ try:
     ws_mov = sh.worksheet("Movimientos")
     df_mov = pd.DataFrame(ws_mov.get_all_records())
     
-    # Normalización de columnas para evitar errores de nombres
     if not df_mov.empty:
         df_mov.columns = [str(c).strip().capitalize() for c in df_mov.columns]
 
@@ -86,7 +85,6 @@ hoy = datetime.now()
 mes_actual_str = hoy.strftime("%Y-%m")
 v_total = 0
 
-# Filtro inteligente de gastos variables solo del mes en curso
 if not df_mov.empty and 'Fecha' in df_mov.columns:
     df_mov['Fecha'] = pd.to_datetime(df_mov['Fecha'], errors='coerce')
     mask = (df_mov['Fecha'].dt.month == hoy.month) & (df_mov['Fecha'].dt.year == hoy.year)
@@ -107,7 +105,7 @@ st.title("🛡️ Mi Guardián Financiero")
 c1, c2, c3 = st.columns(3)
 c1.metric("Disponible Mes", f"{dispo:.2f} €")
 c2.metric("Para HOY", f"{diario:.2f} €")
-c3.metric("Ahorro Real", f"{ahorro_actual:.2f} €", delta=f"{ahorro_actual - ahorro_obj:.2f} vs meta")
+c3.metric("Ahorro Real", f"{ahorro_actual:.2f} €", delta=f"{ahorro_actual - ahorro_obj:.2f} meta")
 
 # --- GRÁFICO ---
 data_chart = pd.DataFrame({
@@ -121,14 +119,13 @@ fig = px.bar(data_chart, x="Columna", y="Euros", color="Concepto", text_auto=".2
 fig.update_layout(legend=dict(orientation="h", y=-0.5, x=0.5, xanchor="center"), margin=dict(b=100))
 st.plotly_chart(fig, use_container_width=True)
 
-# --- HISTORIAL DE ÚLTIMOS MOVIMIENTOS (RECUPERADO) ---
+# --- ÚLTIMOS MOVIMIENTOS ---
 st.markdown("### 📝 Últimos 5 movimientos")
 if not df_mov.empty:
-    # Mostramos los 5 últimos registros en orden inverso (el más nuevo arriba)
     columnas_ver = [c for c in df_mov.columns if c in ['Fecha', 'Concepto', 'Categoría', 'Importe']]
     st.table(df_mov[columnas_ver].tail(5).iloc[::-1])
 else:
-    st.info("No hay gastos registrados este mes.")
+    st.info("Sin gastos registrados este mes.")
 
 # --- REGISTRAR GASTO ---
 st.divider()
@@ -145,19 +142,17 @@ with st.form("gasto", clear_on_submit=True):
 
 # --- CONFIGURACIÓN ---
 st.divider()
-st.subheader("⚙️ Configuración y Balances")
+st.subheader("⚙️ Gestión y Cierre")
 
-# 1. HISTORIAL DE BALANCES
-exp_bal = st.expander("📊 Ver Historial de Meses Anteriores")
-with exp_bal:
+tab_bal, tab_ing, tab_fij, tab_cie = st.tabs(["📊 Balances", "💰 Sueldos", "🏠 Fijos", "🔒 Cerrar Mes"])
+
+with tab_bal:
     if not df_bal.empty:
         st.dataframe(df_bal, use_container_width=True, hide_index=True)
     else:
-        st.info("No hay balances cerrados todavía.")
+        st.info("No hay balances cerrados.")
 
-# 2. SUELDOS
-exp_ing = st.expander("Modificar Sueldos")
-with exp_ing:
+with tab_ing:
     with st.form("edit_ing"):
         nuevos_i = []
         for index, row in df_ing.iterrows():
@@ -166,43 +161,54 @@ with exp_ing:
         if st.form_submit_button("💾 Guardar Cambios"):
             ws_ing.update(range_name='A2', values=nuevos_i); st.rerun()
 
-# 3. GASTOS FIJOS (DISEÑO DE 2 COLUMNAS)
-exp_fij = st.expander("Gestionar Gastos Fijos")
-with exp_fij:
+with tab_fij:
     st.dataframe(df_fij, use_container_width=True, hide_index=True)
     st.write("---")
-    col_add, col_del = st.columns(2)
-    with col_add:
-        with st.form("add_fijo", clear_on_submit=True):
-            st.markdown("**➕ Añadir Fijo**")
-            n_f = st.text_input("Nombre")
-            i_f = st.number_input("Importe (€)", min_value=0.0)
+    
+    t_mod, t_add, t_del = st.tabs(["✏️ Modificar", "➕ Añadir", "🗑️ Borrar"])
+    
+    with t_mod:
+        # Selector FUERA del form para que sea reactivo y actualice el importe al cambiar la opcion
+        opc_mod = df_fij.iloc[:, 0].tolist() if not df_fij.empty else []
+        sel_mod = st.selectbox("Gasto a modificar", opc_mod, key="sel_mod_fij")
+        
+        p_act = 0.0
+        if sel_mod:
+            p_act = float(df_fij[df_fij.iloc[:,0] == sel_mod].iloc[0,1])
+        
+        with st.form("form_mod_fij"):
+            new_p = st.number_input("Nuevo Importe (€)", value=p_act, step=1.0)
+            if st.form_submit_button("Actualizar Precio"):
+                cell = ws_fij.find(sel_mod)
+                ws_fij.update_cell(cell.row, 2, new_p)
+                st.success(f"✅ Precio de {sel_mod} actualizado"); time.sleep(1); st.rerun()
+
+    with t_add:
+        with st.form("add_f", clear_on_submit=True):
+            nf = st.text_input("Nombre"); it = st.number_input("Importe (€)", min_value=0.0)
             if st.form_submit_button("Añadir"):
-                if n_f and i_f > 0:
-                    ws_fij.append_row([n_f, i_f]); st.rerun()
-    with col_del:
-        with st.form("del_fijo"):
-            st.markdown("**🗑️ Borrar Fijo**")
-            opciones = df_fij.iloc[:, 0].tolist() if not df_fij.empty else []
-            seleccion = st.selectbox("Seleccionar", opciones)
+                if nf and it > 0: ws_fij.append_row([nf, it]); st.rerun()
+                
+    with t_del:
+        with st.form("del_f"):
+            opc_del = df_fij.iloc[:, 0].tolist() if not df_fij.empty else []
+            sel_del = st.selectbox("Eliminar gasto", opc_del)
             if st.form_submit_button("Eliminar"):
-                if seleccion:
-                    cell = ws_fij.find(seleccion)
+                if sel_del:
+                    cell = ws_fij.find(sel_del)
                     ws_fij.delete_rows(cell.row); st.rerun()
 
-# 4. FINALIZAR MES
-exp_cie = st.expander("🔒 Cerrar Mes Actual")
-with exp_cie:
+with tab_cie:
     diff = ahorro_actual - ahorro_obj
     if diff >= 0:
         st.success(f"¡Vas genial! Superas tu meta por {diff:.2f} €")
     else:
-        st.warning(f"Ojo, vas {abs(diff):.2f} € por debajo del ahorro objetivo")
+        st.warning(f"Ojo, vas {abs(diff):.2f} € por debajo del objetivo")
     
     if st.button("🚀 GUARDAR BALANCE FINAL"):
+        if diff >= 0: st.balloons()
         ws_bal.append_row([mes_actual_str, i_total, f_total, v_total, ahorro_actual, ahorro_obj])
-        st.success("¡Balance guardado en el historial!")
-        time.sleep(1); st.rerun()
+        st.success("¡Balance guardado!"); time.sleep(1); st.rerun()
 
 # --- SALIR ---
 st.write("---")
