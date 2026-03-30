@@ -18,12 +18,10 @@ def conectar_excel():
         creds_info = dict(st.secrets["gcp_service_account"])
         
         # 2. LIMPIEZA AGRESIVA DE LA CLAVE (Para evitar el error de Padding/PEM)
-        # Quitamos espacios al principio/final y normalizamos los saltos de línea
         pk = creds_info["private_key"]
         if "\\n" in pk:
             pk = pk.replace("\\n", "\n")
         
-        # Eliminamos cualquier espacio accidental antes o después de los guiones de inicio/fin
         pk = pk.strip()
         creds_info["private_key"] = pk
         
@@ -62,9 +60,16 @@ except Exception as e:
     st.stop()
 
 # --- BLOQUE 1: CALCULADORA Y PREDICCIÓN ---
-total_ingresos = pd.to_numeric(df_ingresos.iloc[:, 1], errors='coerce').sum()
+# Extraemos sueldos y % de ahorro por su posición en la pestaña Config
+sueldo_1 = pd.to_numeric(df_ingresos.iloc[0, 1], errors='coerce')
+sueldo_2 = pd.to_numeric(df_ingresos.iloc[1, 1], errors='coerce')
+porcentaje_ahorro = pd.to_numeric(df_ingresos.iloc[2, 1], errors='coerce')
+
+total_ingresos = sueldo_1 + sueldo_2
 total_fijos = pd.to_numeric(df_fijos['Importe'], errors='coerce').sum()
-ahorro_objetivo = total_ingresos * 0.20 
+
+# Calculamos el objetivo de ahorro usando el porcentaje del Excel
+ahorro_objetivo = total_ingresos * (porcentaje_ahorro / 100) 
 
 if not df_movimientos.empty:
     # Aseguramos que 'Importe' sea numérico para sumar
@@ -84,10 +89,9 @@ diario_hoy = disponible_mes / dias_restantes if dias_restantes > 0 else 0
 st.subheader("Estado de tu Bolsillo")
 col1, col2 = st.columns(2)
 with col1:
-    st.metric("Disponible este mes", f"{disponible_mes:.2f} €")
+    st.metric("Total disponible restante este mes", f"{disponible_mes:.2f} €")
 with col2:
-    color_delta = "normal" if diario_hoy > 15 else "inverse"
-    st.metric("Presupuesto diario", f"{diario_hoy:.2f} €", delta=f"{diario_hoy-20:.1f} € vs meta", delta_color=color_delta)
+    st.metric("Tope recomendado para HOY", f"{diario_hoy:.2f} €", delta=f"Quedan {dias_restantes} días", delta_color="off")
 
 # --- BLOQUE 2: REGISTRO DE GASTO RÁPIDO ---
 st.divider()
@@ -110,18 +114,20 @@ with st.form("nuevo_gasto", clear_on_submit=True):
             st.error("Por favor, rellena el concepto e importe.")
 
 # --- BLOQUE 3: CONFIGURACIÓN ---
-with st.expander("⚙️ Editar Sueldos y Gastos Fijos"):
-    st.subheader("Sueldos")
+with st.expander("⚙️ Editar Sueldos, Ahorro y Gastos Fijos"):
+    st.subheader("Sueldos y % Ahorro")
     edit_ingresos = st.data_editor(df_ingresos, use_container_width=True, key="ed_ing", hide_index=True)
-    if st.button("Actualizar Sueldos"):
+    if st.button("Actualizar Sueldos y % Ahorro"):
         ws_config.update([edit_ingresos.columns.values.tolist()] + edit_ingresos.values.tolist())
-        st.success("Sueldos actualizados.")
+        st.success("Sueldos y % de ahorro actualizados.")
         st.rerun()
 
     st.divider()
     
     st.subheader("Gastos Fijos")
-    edit_fijos = st.data_editor(df_fijos, num_rows="dynamic", use_container_width=True, key="ed_fij", hide_index=True)
+    st.info("💡 Para añadir: escribe en la última fila vacía. Para borrar: marca la casilla gris a la izquierda de la fila y pulsa la tecla borrar/papelera.")
+    # hide_index=False para que se vea la casilla de selección
+    edit_fijos = st.data_editor(df_fijos, num_rows="dynamic", use_container_width=True, key="ed_fij", hide_index=False)
     if st.button("Actualizar Gastos Fijos"):
         ws_fijos.update([edit_fijos.columns.values.tolist()] + edit_fijos.values.tolist())
         st.success("Gastos fijos actualizados.")
