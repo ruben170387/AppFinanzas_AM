@@ -35,18 +35,21 @@ def check_password():
 if not check_password():
     st.stop()
 
-# --- CONEXIÓN A GOOGLE SHEETS ---
+# --- CONEXIÓN A GOOGLE SHEETS (LIMPIEZA EXTREMA) ---
 @st.cache_resource
 def conectar_excel():
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        
-        # Cargamos la sección correspondiente de los Secrets
         creds_info = dict(st.secrets["gcp_service_account"])
         
-        # IMPORTANTE: Convertimos los "\n" de texto en saltos de línea reales
-        if "private_key" in creds_info:
-            creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
+        # LIMPIEZA DE LLAVE: 
+        # 1. Quitamos espacios accidentales al inicio y final de todo el bloque
+        pk = creds_info["private_key"].strip()
+        # 2. Rompemos la llave por líneas, quitamos espacios al final de cada línea y volvemos a unir
+        # Esto soluciona el 99% de los errores de "InvalidPadding"
+        pk = "\n".join([line.strip() for line in pk.split("\n")])
+        
+        creds_info["private_key"] = pk
         
         creds = Credentials.from_service_account_info(creds_info, scopes=scope)
         client = gspread.authorize(creds)
@@ -56,7 +59,6 @@ def conectar_excel():
         return None
 
 sh = conectar_excel()
-
 if sh is None:
     st.stop()
 
@@ -75,47 +77,43 @@ except Exception as e:
 def limpiar_numeros(serie):
     return pd.to_numeric(serie.astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
 
-# --- LÓGICA DE CÁLCULOS ---
+# --- CÁLCULOS ---
 es_ahorro = df_ingresos.iloc[:, 0].astype(str).str.contains("Ahorro|%|Objetivo", case=False, na=False)
 porcentaje_ahorro = limpiar_numeros(pd.Series([df_ingresos.loc[es_ahorro].iloc[0, 1]]))[0] if es_ahorro.any() else 20.0
-
 total_ingresos = limpiar_numeros(df_ingresos.loc[~es_ahorro].iloc[:, 1]).sum()
 total_fijos = limpiar_numeros(df_fijos['Importe']).sum()
 ahorro_objetivo = total_ingresos * (porcentaje_ahorro / 100)
 gastos_variables = limpiar_numeros(df_movimientos['Importe']).sum() if not df_movimientos.empty else 0
-
 disponible_mes = total_ingresos - total_fijos - ahorro_objetivo - gastos_variables
-
 hoy = datetime.now()
 _, u_dia = calendar.monthrange(hoy.year, hoy.month)
 dias_restantes = u_dia - hoy.day + 1
 diario_hoy = disponible_mes / dias_restantes if dias_restantes > 0 else 0
 
-# --- INTERFAZ DE USUARIO ---
+# --- INTERFAZ ---
 st.title("🛡️ Mi Guardián Financiero")
-
 c1, c2 = st.columns(2)
 c1.metric("Disponible Mes", f"{disponible_mes:.2f} €")
-c2.metric("Tope para HOY", f"{diario_hoy:.2f} €", delta=f"{dias_restantes} días rest.")
+c2.metric("Tope para HOY", f"{diario_hoy:.2f} €")
 
 # Gráfico
-st.markdown("### 📊 Estado de Gastos")
 df_graf = pd.DataFrame({
     "Tipo": ["Fijos", "Variables", "Ahorro", "Disponible"],
     "Euros": [total_fijos, gastos_variables, ahorro_objetivo, max(0, disponible_mes)]
 })
 st.plotly_chart(px.bar(df_graf, x="Tipo", y="Euros", color="Tipo", text_auto=".2s"), use_container_width=True)
 
-# Registro rápido
+# Registro
 st.divider()
-with st.form("nuevo_gasto", clear_on_submit=True):
+with st.form("gasto", clear_on_submit=True):
     con = st.text_input("Concepto")
     mon = st.number_input("Importe (€)", min_value=0.0, step=1.0)
-    if st.form_submit_button("Guardar Gasto") and con and mon > 0:
-        ws_movimientos.append_row([hoy.strftime("%Y-%m-%d"), con, "Otros", mon])
-        st.success("✅ ¡Anotado!")
-        st.rerun()
+    if st.form_submit_button("Guardar"):
+        if con and mon > 0:
+            ws_movimientos.append_row([hoy.strftime("%Y-%m-%d"), con, "Otros", mon])
+            st.success("✅ ¡Anotado!")
+            st.rerun()
 
-if st.button("🚪 Cerrar Sesión"):
+if st.button("🚪 Salir"):
     st.session_state["autenticado"] = False
     st.rerun()
