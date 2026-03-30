@@ -6,13 +6,13 @@ from datetime import datetime
 import calendar
 import plotly.express as px
 import re
+import time
 
-# --- CONFIGURACIÓN DE PÁGINA (DEBE SER EL PRIMER COMANDO) ---
+# --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Economía Familiar", page_icon="💰", layout="centered")
 
-# --- SISTEMA DE LOGIN ---
+# --- SISTEMA DE LOGIN BLINDADO ---
 def check_password():
-    """Devuelve True si el usuario tiene la contraseña correcta."""
     if "autenticado" not in st.session_state:
         st.session_state["autenticado"] = False
 
@@ -21,33 +21,33 @@ def check_password():
         st.write("Por favor, identifícate para ver las finanzas.")
         
         with st.form("login_form"):
-            usuario = st.text_input("Usuario")
-            clave = st.text_input("Contraseña", type="password")
+            # Convertimos el usuario a minúsculas y quitamos espacios accidentales
+            usuario_input = st.text_input("Usuario").strip().lower()
+            clave_input = st.text_input("Contraseña", type="password")
             submit = st.form_submit_button("Entrar")
 
             if submit:
-                # Comprueba si el bloque [passwords] existe en secrets
                 if "passwords" in st.secrets:
-                    # Comprueba si el usuario existe y la clave es correcta
-                    if usuario in st.secrets["passwords"] and st.secrets["passwords"][usuario] == clave:
+                    # Verificamos si coincide de forma exacta
+                    if usuario_input in st.secrets["passwords"] and st.secrets["passwords"][usuario_input] == clave_input:
                         st.session_state["autenticado"] = True
                         st.rerun()
                     else:
+                        # PROTECCIÓN ANTI-FUERZA BRUTA: Pausa artificial de 1.5 segundos
+                        time.sleep(1.5)
                         st.error("❌ Usuario o contraseña incorrectos")
                 else:
-                    st.error("⚠️ Faltan las contraseñas en los Secrets de Streamlit.")
+                    st.error("⚠️ Falla la configuración de seguridad del servidor.")
         return False
     return True
 
-# Si no está autenticado, detenemos la ejecución aquí mismo.
 if not check_password():
     st.stop()
 
 # ==========================================
-# A PARTIR DE AQUÍ, LA APP SOLO CARGA SI HAY LOGIN CORRECTO
+# APP PRINCIPAL (SOLO ACCESIBLE CON LOGIN)
 # ==========================================
 
-# --- CONEXIÓN INFALIBLE A GOOGLE SHEETS ---
 @st.cache_resource
 def conectar_excel():
     try:
@@ -57,25 +57,22 @@ def conectar_excel():
         pk = creds_info["private_key"]
         if "\\n" in pk:
             pk = pk.replace("\\n", "\n")
-        
         pk = pk.strip()
         creds_info["private_key"] = pk
         
         creds = Credentials.from_service_account_info(creds_info, scopes=scope)
         client = gspread.authorize(creds)
-        
         return client.open("App_Finanzas")
-    except Exception as e:
-        st.error(f"❌ Error de conexión: {e}")
+    except Exception:
+        # PROTECCIÓN DE DATOS: No mostramos el error técnico real al público
         return None
 
 sh = conectar_excel()
 
 if sh is None:
-    st.warning("⚠️ La aplicación no pudo conectar con Google Sheets.")
+    st.error("❌ No se pudo conectar con la base de datos de forma segura. Inténtalo más tarde.")
     st.stop()
 
-# Botón para cerrar sesión
 col_titulo, col_salir = st.columns([0.8, 0.2])
 with col_titulo:
     st.title("🛡️ Mi Guardián Financiero")
@@ -94,15 +91,14 @@ try:
 
     ws_movimientos = sh.worksheet("Movimientos")
     df_movimientos = pd.DataFrame(ws_movimientos.get_all_records())
-except Exception as e:
-    st.error(f"Error al leer las pestañas del Excel: {e}")
+except Exception:
+    st.error("❌ Error al cargar los datos. Revisa la estructura del Excel.")
     st.stop()
 
-# --- FUNCIÓN ANTIMA-COMAS ---
 def limpiar_numeros(serie):
     return pd.to_numeric(serie.astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
 
-# --- BLOQUE 1: CALCULADORA Y PREDICCIÓN (Lógica Dinámica) ---
+# --- BLOQUE 1: CALCULADORA ---
 es_ahorro = df_ingresos.iloc[:, 0].astype(str).str.contains("Ahorro|%|Objetivo", case=False, na=False)
 
 if es_ahorro.any():
@@ -134,7 +130,7 @@ with col1:
 with col2:
     st.metric("Tope para HOY", f"{diario_hoy:.2f} €", delta=f"Quedan {dias_restantes} días", delta_color="off")
 
-# --- BLOQUE DE GRÁFICA OPTIMIZADA PARA MÓVIL ---
+# --- GRÁFICA ---
 st.markdown("### 📊 Reparto de Ingresos vs Gastos")
 
 datos_barras = pd.DataFrame({
@@ -163,14 +159,7 @@ fig.update_traces(texttemplate='%{text:.1f} €', textposition='inside')
 fig.update_layout(
     xaxis_title="", 
     yaxis_title="Euros (€)",
-    legend=dict(
-        orientation="h",       
-        yanchor="bottom",      
-        y=-0.2,                
-        xanchor="center",      
-        x=0.5,
-        title=""               
-    ),
+    legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5, title=""),
     margin=dict(t=10, b=10, l=10, r=10),
     height=450,
     uniformtext=dict(mode="hide", minsize=10)
@@ -179,7 +168,7 @@ fig.update_layout(
 st.plotly_chart(fig, use_container_width=True)
 
 
-# --- BLOQUE 2: REGISTRO DE GASTO RÁPIDO ---
+# --- BLOQUE 2: REGISTRO DE GASTO ---
 st.divider()
 st.header("💸 Registrar Nuevo Gasto")
 with st.form("nuevo_gasto", clear_on_submit=True):
@@ -199,7 +188,7 @@ with st.form("nuevo_gasto", clear_on_submit=True):
         else:
             st.error("Rellena concepto e importe.")
 
-# --- BLOQUE 3: CONFIGURACIÓN (VERSIÓN MÓVIL 100% SEGURA) ---
+# --- BLOQUE 3: CONFIGURACIÓN ---
 with st.expander("⚙️ Editar Sueldos, Ahorro y Gastos Fijos"):
     
     st.markdown("### 1️⃣ Sueldos y % Ahorro")
