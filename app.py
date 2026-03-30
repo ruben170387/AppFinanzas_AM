@@ -34,7 +34,7 @@ def check_password():
                         time.sleep(1.5)
                         st.error("❌ Usuario o contraseña incorrectos")
                 else:
-                    st.error("⚠️ Falla la configuración de seguridad del servidor.")
+                    st.error("⚠️ Error crítico: No se encuentran las contraseñas en los Secrets.")
         return False
     return True
 
@@ -42,28 +42,43 @@ if not check_password():
     st.stop()
 
 # ==========================================
-# APP PRINCIPAL (CONEXIÓN SIN ESCUDO PARA VER ERRORES)
+# APP PRINCIPAL (CONEXIÓN PROTEGIDA)
 # ==========================================
 
 @st.cache_resource
 def conectar_excel():
-    # Eliminado el try/except para diagnosticar el fallo real
-    scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-    creds_info = dict(st.secrets["gcp_service_account"])
-    
-    pk = creds_info["private_key"]
-    if "\\n" in pk:
-        pk = pk.replace("\\n", "\n")
-    pk = pk.strip()
-    creds_info["private_key"] = pk
-    
-    creds = Credentials.from_service_account_info(creds_info, scopes=scope)
-    client = gspread.authorize(creds)
-    return client.open("App_Finanzas")
+    try:
+        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        
+        # Validación de existencia de secretos
+        if "gcp_service_account" not in st.secrets:
+            st.error("Faltan las credenciales de Google en los Secrets.")
+            return None
+            
+        creds_info = dict(st.secrets["gcp_service_account"])
+        
+        # Limpieza de clave privada
+        pk = creds_info.get("private_key", "")
+        if "\\n" in pk:
+            pk = pk.replace("\\n", "\n")
+        pk = pk.strip()
+        creds_info["private_key"] = pk
+        
+        creds = Credentials.from_service_account_info(creds_info, scopes=scope)
+        client = gspread.authorize(creds)
+        return client.open("App_Finanzas")
+    except Exception as e:
+        # Mostramos un error controlado
+        st.error(f"❌ Error de conexión: {e}")
+        return None
 
-# Ahora, si falla, verás el error técnico real de Python/Google
 sh = conectar_excel()
 
+if sh is None:
+    st.warning("⚠️ No se pudo establecer la conexión. Revisa los Secrets y permisos del Excel.")
+    st.stop()
+
+# Encabezado con botón de salida
 col_titulo, col_salir = st.columns([0.8, 0.2])
 with col_titulo:
     st.title("🛡️ Mi Guardián Financiero")
@@ -83,7 +98,7 @@ try:
     ws_movimientos = sh.worksheet("Movimientos")
     df_movimientos = pd.DataFrame(ws_movimientos.get_all_records())
 except Exception as e:
-    st.error(f"❌ Error al cargar las pestañas: {e}")
+    st.error(f"❌ Error al leer las pestañas del Excel: {e}")
     st.stop()
 
 def limpiar_numeros(serie):
