@@ -7,15 +7,51 @@ import calendar
 import plotly.express as px
 import re
 
-# --- CONFIGURACIÓN DE PÁGINA ---
+# --- CONFIGURACIÓN DE PÁGINA (DEBE SER EL PRIMER COMANDO) ---
 st.set_page_config(page_title="Economía Familiar", page_icon="💰", layout="centered")
+
+# --- SISTEMA DE LOGIN ---
+def check_password():
+    """Devuelve True si el usuario tiene la contraseña correcta."""
+    if "autenticado" not in st.session_state:
+        st.session_state["autenticado"] = False
+
+    if not st.session_state["autenticado"]:
+        st.title("🔒 Acceso Restringido")
+        st.write("Por favor, identifícate para ver las finanzas.")
+        
+        with st.form("login_form"):
+            usuario = st.text_input("Usuario")
+            clave = st.text_input("Contraseña", type="password")
+            submit = st.form_submit_button("Entrar")
+
+            if submit:
+                # Comprueba si el bloque [passwords] existe en secrets
+                if "passwords" in st.secrets:
+                    # Comprueba si el usuario existe y la clave es correcta
+                    if usuario in st.secrets["passwords"] and st.secrets["passwords"][usuario] == clave:
+                        st.session_state["autenticado"] = True
+                        st.rerun()
+                    else:
+                        st.error("❌ Usuario o contraseña incorrectos")
+                else:
+                    st.error("⚠️ Faltan las contraseñas en los Secrets de Streamlit.")
+        return False
+    return True
+
+# Si no está autenticado, detenemos la ejecución aquí mismo.
+if not check_password():
+    st.stop()
+
+# ==========================================
+# A PARTIR DE AQUÍ, LA APP SOLO CARGA SI HAY LOGIN CORRECTO
+# ==========================================
 
 # --- CONEXIÓN INFALIBLE A GOOGLE SHEETS ---
 @st.cache_resource
 def conectar_excel():
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        
         creds_info = dict(st.secrets["gcp_service_account"])
         
         pk = creds_info["private_key"]
@@ -39,7 +75,14 @@ if sh is None:
     st.warning("⚠️ La aplicación no pudo conectar con Google Sheets.")
     st.stop()
 
-st.title("🛡️ Mi Guardián Financiero")
+# Botón para cerrar sesión
+col_titulo, col_salir = st.columns([0.8, 0.2])
+with col_titulo:
+    st.title("🛡️ Mi Guardián Financiero")
+with col_salir:
+    if st.button("🚪 Salir"):
+        st.session_state["autenticado"] = False
+        st.rerun()
 
 # --- CARGA DE DATOS ---
 try:
@@ -160,7 +203,6 @@ with st.form("nuevo_gasto", clear_on_submit=True):
 with st.expander("⚙️ Editar Sueldos, Ahorro y Gastos Fijos"):
     
     st.markdown("### 1️⃣ Sueldos y % Ahorro")
-    # Extraemos los valores actuales del Excel para mostrarlos por defecto en el formulario
     sueldo_1_actual = limpiar_numeros(pd.Series([df_ingresos.iloc[0, 1]]))[0] if len(df_ingresos) > 0 else 0.0
     sueldo_2_actual = limpiar_numeros(pd.Series([df_ingresos.iloc[1, 1]]))[0] if len(df_ingresos) > 1 else 0.0
     
