@@ -53,18 +53,22 @@ if sh is None: st.stop()
 try:
     ws_mov = sh.worksheet("Movimientos")
     df_mov = pd.DataFrame(ws_mov.get_all_records())
+    
+    # NORMALIZAR COLUMNAS DE MOVIMIENTOS (Para evitar el KeyError)
+    if not df_mov.empty:
+        df_mov.columns = [str(c).strip().capitalize() for c in df_mov.columns]
+    
     ws_ing = sh.worksheet("Config")
     df_ing = pd.DataFrame(ws_ing.get_all_records())
+    
     ws_fij = sh.worksheet("Gastos_Fijos")
     df_fij = pd.DataFrame(ws_fij.get_all_records())
     
-    # Nueva pestaña para el histórico
     try:
         ws_bal = sh.worksheet("Balances")
     except:
-        # Si no existe, la creamos (solo la primera vez)
         ws_bal = sh.add_worksheet(title="Balances", rows="100", cols="10")
-        ws_bal.append_row(["Mes", "Ingresos", "Fijos", "Variables", "Ahorro_Real"])
+        ws_bal.append_row(["Mes", "Ingresos", "Fijos", "Variables", "Ahorro_Real", "Objetivo"])
     
     df_bal = pd.DataFrame(ws_bal.get_all_records())
 except Exception as e:
@@ -78,35 +82,39 @@ es_ah = df_ing.iloc[:, 0].astype(str).str.contains("Ahorro|%", case=False, na=Fa
 i_total = num(df_ing.loc[~es_ah].iloc[:, 1]).sum()
 f_total = num(df_fij['Importe']).sum()
 
-# Filtrar movimientos solo del mes actual para el disponible
+# Gastos Variables del mes actual (Corregido con validación de columna)
 hoy = datetime.now()
 mes_actual_str = hoy.strftime("%Y-%m")
-if not df_mov.empty:
+v_total = 0
+
+if not df_mov.empty and 'Fecha' in df_mov.columns:
     df_mov['Fecha'] = pd.to_datetime(df_mov['Fecha'], errors='coerce')
-    # Solo sumamos los gastos del mes y año en curso
     mask = (df_mov['Fecha'].dt.month == hoy.month) & (df_mov['Fecha'].dt.year == hoy.year)
     v_total = num(df_mov.loc[mask, 'Importe']).sum()
-else:
-    v_total = 0
+elif not df_mov.empty:
+    st.warning(f"⚠️ La columna 'Fecha' no existe. Columnas encontradas: {list(df_mov.columns)}")
 
 p_ahorro = num(pd.Series([df_ing.loc[es_ah].iloc[0, 1]]))[0] if es_ah.any() else 20.0
 ahorro_obj = i_total * (p_ahorro / 100)
 dispo = i_total - f_total - ahorro_obj - v_total
 
+# Ahorro Real Actual
+ahorro_actual = i_total - f_total - v_total
+
 _, u_dia = calendar.monthrange(hoy.year, hoy.month)
 dias_r = u_dia - hoy.day + 1
 diario = dispo / dias_r if dias_r > 0 else 0
 
-# --- INTERFAZ PRINCIPAL ---
+# --- INTERFAZ ---
 st.title("🛡️ Mi Guardián Financiero")
 
-# Resumen rápido
 c1, c2, c3 = st.columns(3)
 c1.metric("Disponible Mes", f"{dispo:.2f} €")
 c2.metric("Para HOY", f"{diario:.2f} €")
-c3.metric("Ahorro Acumulado", f"{i_total - f_total - v_total:.2f} €")
+c3.metric("Ahorro Real Hoy", f"{ahorro_actual:.2f} €", 
+          delta=f"{ahorro_actual - ahorro_obj:.2f} € vs meta")
 
-# --- GRÁFICO ---
+# Gráfico
 data_chart = pd.DataFrame({
     "Columna": ["1. Ingresos", "2. Distribución", "2. Distribución", "2. Distribución", "2. Distribución"],
     "Concepto": ["Ingresos Totales", "Gastos Fijos", "Gastos Variables", "Ahorro Objetivo", "Disponible"],
@@ -118,14 +126,12 @@ fig = px.bar(data_chart, x="Columna", y="Euros", color="Concepto", text_auto=".2
 fig.update_layout(legend=dict(orientation="h", y=-0.5, x=0.5, xanchor="center"), margin=dict(b=100))
 st.plotly_chart(fig, use_container_width=True)
 
-# --- HISTÓRICO DE MESES ---
-with st.expander("📊 Ver Balance de Meses Anteriores"):
+# Historial Balances
+with st.expander("📊 Ver Historial de Balances"):
     if not df_bal.empty:
         st.dataframe(df_bal, use_container_width=True, hide_index=True)
-        fig_hist = px.line(df_bal, x="Mes", y="Ahorro_Real", title="Evolución de tu Ahorro", markers=True)
-        st.plotly_chart(fig_hist, use_container_width=True)
     else:
-        st.info("Aún no hay meses cerrados en el historial.")
+        st.info("No hay balances guardados.")
 
 # --- REGISTRAR GASTO ---
 st.divider()
@@ -141,40 +147,38 @@ with st.form("gasto", clear_on_submit=True):
         time.sleep(1)
         st.rerun()
 
-# --- CONFIGURACIÓN Y CIERRE DE MES ---
+# --- GESTIÓN Y CIERRE ---
 st.divider()
 st.subheader("⚙️ Gestión y Cierre")
-
-tab1, tab2, tab3 = st.tabs(["💰 Ingresos/Sueldos", "🏠 Gastos Fijos", "🔒 Finalizar Mes"])
+tab1, tab2, tab3 = st.tabs(["💰 Sueldos", "🏠 Fijos", "🏁 Finalizar Mes"])
 
 with tab1:
     with st.form("edit_ing"):
-        st.write(f"Sueldos para **{calendar.month_name[hoy.month]}**:")
         nuevos_i = []
         for index, row in df_ing.iterrows():
             val = st.number_input(f"{row[0]}", value=float(num(pd.Series(row[1]))[0]))
             nuevos_i.append([row[0], val])
         if st.form_submit_button("Actualizar Sueldos"):
-            ws_ing.update(range_name='A2', values=nuevos_i)
-            st.rerun()
+            ws_ing.update(range_name='A2', values=nuevos_i); st.rerun()
 
 with tab2:
     st.dataframe(df_fij, use_container_width=True, hide_index=True)
     with st.form("add_fijo"):
-        n_f = st.text_input("Nuevo Gasto Fijo")
-        i_f = st.number_input("Importe", min_value=0.0)
+        n_f = st.text_input("Nombre"); i_f = st.number_input("Importe", min_value=0.0)
         if st.form_submit_button("Añadir"):
             ws_fij.append_row([n_f, i_f]); st.rerun()
 
 with tab3:
-    st.warning("Esto guardará el resumen de este mes en el historial.")
-    if st.button("🚀 CERRAR MES Y GUARDAR BALANCE"):
-        # Guardamos la foto actual en la hoja de Balances
-        ahorro_real = i_total - f_total - v_total
-        ws_bal.append_row([mes_actual_str, i_total, f_total, v_total, ahorro_real])
-        st.success(f"Balance de {mes_actual_str} guardado correctamente.")
-        time.sleep(2)
-        st.rerun()
+    diff = ahorro_actual - ahorro_obj
+    if diff >= 0:
+        st.success(f"¡Vas genial! Superas tu meta por {diff:.2f} €")
+    else:
+        st.warning(f"Ojo, vas {abs(diff):.2f} € por debajo del ahorro objetivo")
+    
+    if st.button("💾 GUARDAR BALANCE FINAL DEL MES"):
+        ws_bal.append_row([mes_actual_str, i_total, f_total, v_total, ahorro_actual, ahorro_obj])
+        st.success("Balance guardado.")
+        time.sleep(1); st.rerun()
 
 # --- SALIR ---
 st.write("---")
