@@ -63,13 +63,20 @@ except Exception as e:
 
 def num(s): return pd.to_numeric(s.astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
 
-# --- CÁLCULOS ---
-i_total = num(df_ing.iloc[:, 1]).sum()
+# --- CÁLCULOS CORRECTOS ---
+# Identificamos qué filas son de ahorro para excluirlas del total de ingresos
+es_ah = df_ing.iloc[:, 0].astype(str).str.contains("Ahorro|%", case=False, na=False)
+
+# Ingresos Reales: Solo sumamos las filas que NO son ahorro
+i_total = num(df_ing.loc[~es_ah].iloc[:, 1]).sum()
+
 f_total = num(df_fij['Importe']).sum()
 v_total = num(df_mov['Importe']).sum() if not df_mov.empty else 0
-es_ah = df_ing.iloc[:, 0].astype(str).str.contains("Ahorro|%", case=False, na=False)
+
+# Porcentaje de ahorro
 p_ahorro = num(pd.Series([df_ing.loc[es_ah].iloc[0, 1]]))[0] if es_ah.any() else 20.0
 ahorro_obj = i_total * (p_ahorro / 100)
+
 dispo = i_total - f_total - ahorro_obj - v_total
 
 hoy = datetime.now()
@@ -84,7 +91,7 @@ col1, col2 = st.columns(2)
 col1.metric("Disponible Mes", f"{dispo:.2f} €")
 col2.metric("Límite HOY", f"{diario:.2f} €", delta=f"{dias_r} días rest.")
 
-# --- GRÁFICO DE DOS COLUMNAS ---
+# --- GRÁFICO MEJORADO ---
 st.markdown("### 📊 Comparativa Ingresos vs Distribución")
 data_chart = pd.DataFrame({
     "Columna": ["1. Ingresos", "2. Distribución", "2. Distribución", "2. Distribución", "2. Distribución"],
@@ -92,7 +99,7 @@ data_chart = pd.DataFrame({
     "Euros": [i_total, f_total, v_total, ahorro_obj, max(0, dispo)]
 })
 
-fig = px.bar(data_chart, x="Columna", y="Euros", color="Concepto", text_auto=".2f",
+fig = px.bar(data_chart, x="Columna", y="Euros", color="Concepto", text="Euros",
              color_discrete_map={
                  "Ingresos Totales": "#2ECC71",
                  "Gastos Fijos": "#E74C3C",
@@ -100,78 +107,82 @@ fig = px.bar(data_chart, x="Columna", y="Euros", color="Concepto", text_auto=".2
                  "Ahorro": "#3498DB",
                  "Disponible": "#1ABC9C"
              })
-fig.update_layout(xaxis_title="", yaxis_title="Euros (€)", showlegend=True)
+
+# Ajustes de visibilidad de valores y leyenda abajo
+fig.update_traces(texttemplate='%{text:.2f} €', textposition='inside', textfont_size=12)
+fig.update_layout(
+    xaxis_title="", 
+    yaxis_title="Euros (€)",
+    legend=dict(orientation="h", yanchor="bottom", y=-0.5, xanchor="center", x=0.5, title=""),
+    margin=dict(t=20, b=100, l=10, r=10),
+    height=500
+)
 st.plotly_chart(fig, use_container_width=True)
 
-# --- SECCIÓN: REGISTRAR GASTO (SE QUEDA IGUAL) ---
+# --- TABLA DE ÚLTIMOS MOVIMIENTOS ---
+st.markdown("### 📝 Últimos 5 movimientos")
+if not df_mov.empty:
+    # Mostramos los últimos 5 registros ordenados por el más reciente arriba
+    st.table(df_mov.tail(5).iloc[::-1])
+else:
+    st.info("Aún no hay movimientos registrados.")
+
+# --- SECCIÓN: REGISTRAR GASTO ---
 st.divider()
 st.subheader("💸 Registrar Gasto")
 with st.form("gasto", clear_on_submit=True):
     c_con, c_mon = st.columns([2, 1])
     concepto = c_con.text_input("¿En qué?")
     monto = c_mon.number_input("Euros", min_value=0.0, step=1.0)
-    if st.form_submit_button("Guardar Gasto") and concepto and monto > 0:
-        ws_mov.append_row([hoy.strftime("%Y-%m-%d"), concepto, "Gasto", monto])
-        st.success("✅ ¡Anotado!")
-        time.sleep(1)
-        st.rerun()
+    if st.form_submit_button("Guardar Gasto"):
+        if concepto and monto > 0:
+            ws_mov.append_row([hoy.strftime("%Y-%m-%d"), concepto, "Gasto", monto])
+            st.success("✅ ¡Anotado!")
+            time.sleep(1)
+            st.rerun()
 
-# --- SECCIÓN: GESTIÓN DE DATOS FIJOS (NUEVA) ---
+# --- SECCIÓN: GESTIÓN DE DATOS FIJOS ---
 st.divider()
-st.subheader("⚙️ Gestión de Datos Fijos")
-exp_ing = st.expander("Modificar Ingresos y % Ahorro")
+st.subheader("⚙️ Configuración del Sistema")
+exp_ing = st.expander("Modificar Sueldos y % Ahorro")
 with exp_ing:
     with st.form("edit_ingresos"):
-        st.write("Edita tus fuentes de ingresos actuales:")
-        # Generamos inputs dinámicos basados en el Excel
         nuevos_ingresos = []
         for index, row in df_ing.iterrows():
-            val = st.number_input(f"{row[0]} (€)", value=float(num(pd.Series(row[1]))[0]))
+            val = st.number_input(f"{row[0]}", value=float(num(pd.Series(row[1]))[0]))
             nuevos_ingresos.append([row[0], val])
-        
-        if st.form_submit_button("Actualizar Ingresos"):
+        if st.form_submit_button("Actualizar"):
             ws_ing.update(range_name='A2', values=nuevos_ingresos)
-            st.success("✅ Ingresos actualizados")
+            st.success("Ingresos actualizados")
             time.sleep(1)
             st.rerun()
 
 exp_fij = st.expander("Gestionar Gastos Fijos")
 with exp_fij:
-    st.write("Gastos fijos actuales:")
-    st.dataframe(df_fij, use_container_width=True, hide_index=True)
-    
     col_add, col_del = st.columns(2)
     with col_add:
         with st.form("add_fijo", clear_on_submit=True):
-            st.write("➕ Añadir Gasto Fijo")
+            st.write("➕ Añadir Fijo")
             n_fijo = st.text_input("Nombre")
             i_fijo = st.number_input("Importe", min_value=0.0)
             if st.form_submit_button("Añadir"):
                 if n_fijo and i_fijo > 0:
                     ws_fij.append_row([n_fijo, i_fijo])
-                    st.success("Añadido")
-                    time.sleep(1)
                     st.rerun()
-    
     with col_del:
         with st.form("del_fijo"):
-            st.write("🗑️ Borrar Gasto Fijo")
+            st.write("🗑️ Borrar Fijo")
             opciones = df_fij.iloc[:, 0].tolist() if not df_fij.empty else []
             seleccion = st.selectbox("Seleccionar", opciones)
             if st.form_submit_button("Eliminar") and seleccion:
-                # Buscamos la fila y la borramos
                 cell = ws_fij.find(seleccion)
                 ws_fij.delete_rows(cell.row)
-                st.success("Eliminado")
-                time.sleep(1)
                 st.rerun()
 
-# --- BOTÓN DE SALIDA (LINK PEQUEÑO AL FINAL) ---
-st.write("")
-st.write("")
-c_left, c_center, c_right = st.columns([4, 1, 4])
-with c_center:
-    if st.button("Cerrar sesión", type="secondary", use_container_width=False, help="Haz clic para salir"):
+# --- BOTÓN DE SALIDA (Ajustado para evitar cortes de texto) ---
+st.write("---")
+col_space, col_logout, col_space2 = st.columns([1, 1, 1])
+with col_logout:
+    if st.button("Cerrar Sesión", use_container_width=True):
         st.session_state["autenticado"] = False
         st.rerun()
-st.markdown("<p style='text-align: center; font-size: 0.8rem; color: gray;'>Mi Guardián Financiero &copy; 2024</p>", unsafe_allow_html=True)
