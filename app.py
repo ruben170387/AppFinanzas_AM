@@ -63,7 +63,7 @@ except Exception as e:
 
 def num(s): return pd.to_numeric(s.astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
 
-# --- CÁLCULOS CORRECTOS ---
+# --- CÁLCULOS (FILTRANDO AHORRO DE INGRESOS) ---
 es_ah = df_ing.iloc[:, 0].astype(str).str.contains("Ahorro|%", case=False, na=False)
 i_total = num(df_ing.loc[~es_ah].iloc[:, 1]).sum()
 f_total = num(df_fij['Importe']).sum()
@@ -81,10 +81,10 @@ diario = dispo / dias_r if dias_r > 0 else 0
 st.title("🛡️ Mi Guardián Financiero")
 
 col1, col2 = st.columns(2)
-col1.metric("Disponible Mes", f"{dispo:.2f} €")
-col2.metric("Límite HOY", f"{diario:.2f} €", delta=f"{dias_r} días rest.")
+col1.metric("Disponible Mes", f"{disponible_mes:.2f} €")
+col2.metric("Tope para HOY", f"{diario_hoy:.2f} €", delta=f"{dias_restantes} días rest.")
 
-# --- GRÁFICO ---
+# --- GRÁFICO (LEYENDA ABAJO Y VALORES CLAROS) ---
 st.markdown("### 📊 Comparativa Ingresos vs Distribución")
 data_chart = pd.DataFrame({
     "Columna": ["1. Ingresos", "2. Distribución", "2. Distribución", "2. Distribución", "2. Distribución"],
@@ -108,7 +108,7 @@ fig.update_layout(
 )
 st.plotly_chart(fig, use_container_width=True)
 
-# --- HISTORIAL ---
+# --- HISTORIAL (ÚLTIMOS 5) ---
 st.markdown("### 📝 Últimos 5 movimientos")
 if not df_mov.empty:
     st.table(df_mov.tail(5).iloc[::-1])
@@ -129,59 +129,80 @@ with st.form("gasto", clear_on_submit=True):
     if st.form_submit_button("Guardar Gasto"):
         if concepto and monto > 0:
             ws_mov.append_row([hoy.strftime("%Y-%m-%d"), concepto, categoria, monto])
-            st.success(f"✅ Anotado en {categoria}")
+            st.success("✅ Gasto anotado")
             time.sleep(1)
             st.rerun()
 
-# --- GESTIÓN DE DATOS (TABLAS EDITABLES) ---
+# --- GESTIÓN DE CONFIGURACIÓN ---
 st.divider()
 st.subheader("⚙️ Configuración del Sistema")
 
-# 1. INGRESOS Y AHORRO
-exp_ing = st.expander("Modificar Sueldos y % Ahorro")
+# 1. INGRESOS
+exp_ing = st.expander("Sueldos y Ahorro")
 with exp_ing:
-    st.info("Haz clic en las celdas de la derecha para cambiar los importes:")
-    # Editor de tabla para ingresos
-    edited_df_ing = st.data_editor(
-        df_ing,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            df_ing.columns[1]: st.column_config.NumberColumn("Euros / %", format="%.2f")
-        }
-    )
-    if st.button("💾 Guardar Ingresos y Ahorro"):
-        ws_ing.clear()
-        ws_ing.update([edited_df_ing.columns.values.tolist()] + edited_df_ing.values.tolist())
-        st.success("✅ Ingresos actualizados en Excel")
-        time.sleep(1)
-        st.rerun()
+    with st.form("edit_ingresos"):
+        nuevos_ingresos = []
+        for index, row in df_ing.iterrows():
+            val = st.number_input(f"{row[0]}", value=float(num(pd.Series(row[1]))[0]))
+            nuevos_ingresos.append([row[0], val])
+        if st.form_submit_button("💾 Guardar Sueldos"):
+            ws_ing.update(range_name='A2', values=nuevos_ingresos)
+            st.success("Ingresos actualizados")
+            time.sleep(1)
+            st.rerun()
 
-# 2. GASTOS FIJOS (TABLA EDITABLE FUNCIONAL)
-exp_fij = st.expander("Gestionar Gastos Fijos (Tabla Interactiva)")
+# 2. GASTOS FIJOS (VUELTA AL SISTEMA DE FORMULARIOS + MODIFICAR)
+exp_fij = st.expander("Gestionar Gastos Fijos")
 with exp_fij:
-    st.write("Edita directamente, añade filas al final o selecciona una fila para borrarla:")
+    # Ver tabla (Solo lectura)
+    st.markdown("**Gastos actuales:**")
+    st.dataframe(df_fij, use_container_width=True, hide_index=True)
     
-    # Editor de tabla dinámico
-    edited_df_fij = st.data_editor(
-        df_fij,
-        num_rows="dynamic",  # Permite añadir y borrar filas directamente
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Importe": st.column_config.NumberColumn("Importe (€)", format="%.2f €")
-        }
-    )
+    st.write("---")
     
-    if st.button("💾 Guardar cambios en Gastos Fijos"):
-        # Limpiamos la pestaña y subimos el nuevo dataframe completo
-        ws_fij.clear()
-        # Preparamos los datos incluyendo los encabezados
-        data_to_upload = [edited_df_fij.columns.values.tolist()] + edited_df_fij.values.tolist()
-        ws_fij.update(data_to_upload)
-        st.success("✅ Lista de gastos fijos actualizada")
-        time.sleep(1)
-        st.rerun()
+    # Tres acciones: Añadir, Modificar, Borrar
+    tab_mod, tab_add, tab_del = st.tabs(["✏️ Modificar Precio", "➕ Añadir Nuevo", "🗑️ Borrar Gasto"])
+    
+    with tab_mod:
+        with st.form("modificar_fijo"):
+            opciones = df_fij.iloc[:, 0].tolist() if not df_fij.empty else []
+            seleccion = st.selectbox("Selecciona gasto para cambiar su precio", opciones)
+            # Buscamos el precio actual para mostrarlo por defecto
+            precio_actual = 0.0
+            if seleccion:
+                precio_actual = float(df_fij[df_fij.iloc[:,0] == seleccion].iloc[0,1])
+            
+            nuevo_precio = st.number_input("Nuevo Importe (€)", value=precio_actual)
+            
+            if st.form_submit_button("Actualizar Importe"):
+                cell = ws_fij.find(seleccion)
+                ws_fij.update_cell(cell.row, 2, nuevo_precio)
+                st.success(f"Precio de {seleccion} actualizado a {nuevo_precio}€")
+                time.sleep(1)
+                st.rerun()
+
+    with tab_add:
+        with st.form("add_fijo", clear_on_submit=True):
+            n_fijo = st.text_input("Nombre del Gasto (ej. Netflix)")
+            i_fijo = st.number_input("Importe (€)", min_value=0.0)
+            if st.form_submit_button("Añadir a la lista"):
+                if n_fijo and i_fijo > 0:
+                    ws_fij.append_row([n_fijo, i_fijo])
+                    st.success("Gasto añadido")
+                    time.sleep(1)
+                    st.rerun()
+
+    with tab_del:
+        with st.form("del_fijo"):
+            opciones = df_fij.iloc[:, 0].tolist() if not df_fij.empty else []
+            seleccion_del = st.selectbox("Selecciona gasto para ELIMINAR", opciones)
+            if st.form_submit_button("Eliminar permanentemente"):
+                if seleccion_del:
+                    cell = ws_fij.find(seleccion_del)
+                    ws_fij.delete_rows(cell.row)
+                    st.success("Gasto eliminado")
+                    time.sleep(1)
+                    st.rerun()
 
 # --- CIERRE DE SESIÓN ---
 st.write("---")
