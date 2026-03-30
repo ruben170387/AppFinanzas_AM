@@ -20,9 +20,10 @@ def check_password():
             u = st.text_input("Usuario").strip().lower()
             p = st.text_input("Contraseña", type="password")
             if st.form_submit_button("Entrar"):
+                # Verificación robusta de la existencia de la tabla passwords
                 if "passwords" in st.secrets and u in st.secrets["passwords"]:
-                    # Comprobamos la contraseña (asegurando que sea string)
-                    if str(st.secrets["passwords"][u]) == p:
+                    # Convertimos a string por si el TOML interpreta el password como número
+                    if str(st.secrets["passwords"][u]) == str(p):
                         st.session_state["autenticado"] = True
                         st.rerun()
                 st.error("❌ Credenciales incorrectas")
@@ -32,27 +33,27 @@ def check_password():
 if not check_password():
     st.stop()
 
-# --- CONEXIÓN MAESTRA (OPTIMIZADA PARA LÍNEA ÚNICA) ---
+# --- CONEXIÓN MAESTRA (OPTIMIZADA PARA TOML MULTILÍNEA) ---
 @st.cache_resource
 def conectar_excel():
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         
-        # Cargamos el diccionario de secretos
+        # 1. Cargamos el diccionario de secretos (Copia profunda para evitar modificar st.secrets)
         creds_info = dict(st.secrets["gcp_service_account"])
         
-        # Limpieza de la clave privada
+        # 2. Limpieza Inteligente de la clave privada
         pk = creds_info["private_key"]
         
-        # 1. Convertimos los \n de texto en saltos de línea reales
-        pk = pk.replace("\\n", "\n")
+        # Si por alguna razón el TOML viene con \n literales (texto), los convertimos.
+        # Si ya vienen como saltos de línea (comillas triples), esto no romperá nada.
+        if "\\n" in pk:
+            pk = pk.replace("\\n", "\n")
         
-        # 2. Eliminamos comillas accidentales y espacios en los extremos
-        pk = pk.strip().strip('"').strip("'")
+        # Eliminamos espacios en blanco accidentales al inicio/final del bloque
+        creds_info["private_key"] = pk.strip()
         
-        creds_info["private_key"] = pk
-        
-        # Autorización con Google
+        # 3. Autorización
         creds = Credentials.from_service_account_info(creds_info, scopes=scope)
         client = gspread.authorize(creds)
         return client.open("App_Finanzas")
@@ -62,18 +63,20 @@ def conectar_excel():
 
 sh = conectar_excel()
 
-# Si la conexión falla, detenemos la ejecución para evitar errores en cascada
 if sh is None:
-    st.warning("⚠️ Revisa los Secrets en Streamlit Cloud y asegúrate de haber hecho un 'Reboot app'.")
+    st.warning("⚠️ Error en la clave privada. Asegúrate de que el TOML usa ''' (comillas triples) para la clave.")
     st.stop()
 
 # --- CARGA DE DATOS ---
 try:
+    # Obtenemos las hojas
     ws_mov = sh.worksheet("Movimientos")
-    df_mov = pd.DataFrame(ws_mov.get_all_records())
     ws_ing = sh.worksheet("Config")
-    df_ing = pd.DataFrame(ws_ing.get_all_records())
     ws_fij = sh.worksheet("Gastos_Fijos")
+    
+    # Cargamos a DataFrames
+    df_mov = pd.DataFrame(ws_mov.get_all_records())
+    df_ing = pd.DataFrame(ws_ing.get_all_records())
     df_fij = pd.DataFrame(ws_fij.get_all_records())
 except Exception as e:
     st.error(f"❌ Error al leer las pestañas del Excel: {e}")
@@ -81,18 +84,29 @@ except Exception as e:
 
 # Función para limpiar y convertir números
 def num(s): 
-    return pd.to_numeric(s.astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
+    # Aseguramos que sea string, quitamos moneda si existe, cambiamos coma por punto
+    s_clean = s.astype(str).str.replace('€', '').str.replace(',', '.').str.strip()
+    return pd.to_numeric(s_clean, errors='coerce').fillna(0)
 
 # --- CÁLCULOS ---
+# Ingresos: Sumamos la segunda columna de la pestaña Config
 i = num(df_ing.iloc[:, 1]).sum()
-f = num(df_fij['Importe']).sum()
-v = num(df_mov['Importe']).sum() if not df_mov.empty else 0
 
-# Buscamos el porcentaje de ahorro si existe
-es_ah = df_ing.iloc[:, 0].astype(str).str.contains("Ahorro|%", case=False, na=False)
-p_ahorro = num(pd.Series([df_ing.loc[es_ah].iloc[0, 1]]))[0] if es_ah.any() else 20.0
+# Fijos: Sumamos la columna 'Importe'
+f = num(df_fij['Importe']).sum() if 'Importe' in df_fij.columns else 0
+
+# Variables: Sumamos 'Importe' de Movimientos
+v = num(df_mov['Importe']).sum() if not df_mov.empty and 'Importe' in df_mov.columns else 0
+
+# Lógica de Ahorro
+p_ahorro = 20.0 # Por defecto 20%
+if not df_ing.empty:
+    es_ah = df_ing.iloc[:, 0].astype(str).str.contains("Ahorro|%", case=False, na=False)
+    if es_ah.any():
+        val_ahorro = df_ing.loc[es_ah].iloc[0, 1]
+        p_ahorro = float(num(pd.Series([val_ahorro]))[0])
+
 ahorro_obj = i * (p_ahorro / 100)
-
 dispo = i - f - ahorro_obj - v
 
 # Cálculo de tope diario
@@ -114,15 +128,16 @@ df_graf = pd.DataFrame({
     "Concepto": ["Fijos", "Variables", "Ahorro", "Disponible"],
     "Euros": [f, v, ahorro_obj, max(0, dispo)]
 })
-fig = px.bar(df_graf, x="Concepto", y="Euros", color="Concepto", text_auto=".2s")
+fig = px.bar(df_graf, x="Concepto", y="Euros", color="Concepto", text_auto=".2f")
 st.plotly_chart(fig, use_container_width=True)
 
 # Formulario de registro
 st.divider()
+st.header("💸 Registrar Gasto")
 with st.form("gasto", clear_on_submit=True):
     col_a, col_b = st.columns([2, 1])
     con = col_a.text_input("¿En qué has gastado?")
-    mon = col_b.number_input("Euros", min_value=0.0, step=1.0)
+    mon = col_b.number_input("Euros", min_value=0.0, step=1.0, format="%.2f")
     if st.form_submit_button("Guardar Gasto"):
         if con and mon > 0:
             ws_mov.append_row([hoy.strftime("%Y-%m-%d"), con, "Gasto", mon])
@@ -130,7 +145,7 @@ with st.form("gasto", clear_on_submit=True):
             time.sleep(1)
             st.rerun()
 
-# Botón de cierre de sesión
+# Botón de cierre de sesión en el sidebar
 if st.sidebar.button("🚪 Cerrar Sesión"):
     st.session_state["autenticado"] = False
     st.rerun()
