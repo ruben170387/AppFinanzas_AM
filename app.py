@@ -6,6 +6,7 @@ from datetime import datetime
 import calendar
 import plotly.express as px
 import time
+import base64
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Economía Familiar", page_icon="💰", layout="centered")
@@ -115,25 +116,19 @@ if not df_mov.empty:
 else:
     st.info("Aún no hay movimientos registrados.")
 
-# --- FORMULARIO DE GASTO ACTUALIZADO CON CATEGORÍAS ---
+# --- REGISTRAR GASTO ---
 st.divider()
 st.subheader("💸 Registrar Gasto")
 with st.form("gasto", clear_on_submit=True):
     col_con, col_cat, col_mon = st.columns([2, 2, 1])
-    
     with col_con:
         concepto = st.text_input("¿En qué?")
-    
     with col_cat:
-        # Aquí puedes personalizar la lista de categorías
         categoria = st.selectbox("Categoría", ["Comida", "Supermercado", "Ocio", "Transporte", "Hogar", "Salud", "Ropa", "Otros"])
-    
     with col_mon:
         monto = st.number_input("Euros", min_value=0.0, step=1.0)
-    
     if st.form_submit_button("Guardar Gasto"):
         if concepto and monto > 0:
-            # Guardamos: Fecha, Concepto, Categoría, Importe
             ws_mov.append_row([hoy.strftime("%Y-%m-%d"), concepto, categoria, monto])
             st.success(f"✅ Anotado en {categoria}")
             time.sleep(1)
@@ -142,6 +137,7 @@ with st.form("gasto", clear_on_submit=True):
 # --- GESTIÓN DE DATOS ---
 st.divider()
 st.subheader("⚙️ Configuración del Sistema")
+
 exp_ing = st.expander("Modificar Sueldos y % Ahorro")
 with exp_ing:
     with st.form("edit_ingresos"):
@@ -155,27 +151,43 @@ with exp_ing:
             time.sleep(1)
             st.rerun()
 
+# --- APARTADO GASTOS FIJOS ACTUALIZADO ---
 exp_fij = st.expander("Gestionar Gastos Fijos")
 with exp_fij:
+    # 1. Visualización de la tabla actual
+    st.markdown("**Lista actual de Gastos Fijos:**")
+    if not df_fij.empty:
+        st.dataframe(df_fij, use_container_width=True, hide_index=True)
+    else:
+        st.info("No hay gastos fijos registrados.")
+    
+    st.write("---")
+    
+    # 2. Controles para Añadir o Borrar
     col_add, col_del = st.columns(2)
     with col_add:
         with st.form("add_fijo", clear_on_submit=True):
-            st.write("➕ Añadir Fijo")
-            n_fijo = st.text_input("Nombre")
-            i_fijo = st.number_input("Importe", min_value=0.0)
-            if st.form_submit_button("Añadir"):
+            st.write("➕ **Añadir Nuevo**")
+            n_fijo = st.text_input("Concepto (ej. Alquiler)")
+            i_fijo = st.number_input("Importe (€)", min_value=0.0, step=1.0)
+            if st.form_submit_button("Añadir Gasto"):
                 if n_fijo and i_fijo > 0:
                     ws_fij.append_row([n_fijo, i_fijo])
+                    st.success(f"{n_fijo} añadido.")
+                    time.sleep(1)
                     st.rerun()
     with col_del:
         with st.form("del_fijo"):
-            st.write("🗑️ Borrar Fijo")
+            st.write("🗑️ **Borrar Existente**")
             opciones = df_fij.iloc[:, 0].tolist() if not df_fij.empty else []
-            seleccion = st.selectbox("Seleccionar", opciones)
-            if st.form_submit_button("Eliminar") and seleccion:
-                cell = ws_fij.find(seleccion)
-                ws_fij.delete_rows(cell.row)
-                st.rerun()
+            seleccion = st.selectbox("Seleccionar gasto", opciones)
+            if st.form_submit_button("Eliminar Gasto"):
+                if seleccion:
+                    cell = ws_fij.find(seleccion)
+                    ws_fij.delete_rows(cell.row)
+                    st.success(f"{seleccion} eliminado.")
+                    time.sleep(1)
+                    st.rerun()
 
 # --- CIERRE DE SESIÓN ---
 st.write("---")
