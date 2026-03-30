@@ -21,19 +21,16 @@ def check_password():
         st.write("Por favor, identifícate para ver las finanzas.")
         
         with st.form("login_form"):
-            # Convertimos el usuario a minúsculas y quitamos espacios accidentales
             usuario_input = st.text_input("Usuario").strip().lower()
             clave_input = st.text_input("Contraseña", type="password")
             submit = st.form_submit_button("Entrar")
 
             if submit:
                 if "passwords" in st.secrets:
-                    # Verificamos si coincide de forma exacta
                     if usuario_input in st.secrets["passwords"] and st.secrets["passwords"][usuario_input] == clave_input:
                         st.session_state["autenticado"] = True
                         st.rerun()
                     else:
-                        # PROTECCIÓN ANTI-FUERZA BRUTA: Pausa artificial de 1.5 segundos
                         time.sleep(1.5)
                         st.error("❌ Usuario o contraseña incorrectos")
                 else:
@@ -45,33 +42,27 @@ if not check_password():
     st.stop()
 
 # ==========================================
-# APP PRINCIPAL (SOLO ACCESIBLE CON LOGIN)
+# APP PRINCIPAL (CONEXIÓN SIN ESCUDO PARA VER ERRORES)
 # ==========================================
 
 @st.cache_resource
 def conectar_excel():
-    try:
-        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        creds_info = dict(st.secrets["gcp_service_account"])
-        
-        pk = creds_info["private_key"]
-        if "\\n" in pk:
-            pk = pk.replace("\\n", "\n")
-        pk = pk.strip()
-        creds_info["private_key"] = pk
-        
-        creds = Credentials.from_service_account_info(creds_info, scopes=scope)
-        client = gspread.authorize(creds)
-        return client.open("App_Finanzas")
-    except Exception:
-        # PROTECCIÓN DE DATOS: No mostramos el error técnico real al público
-        return None
+    # Eliminado el try/except para diagnosticar el fallo real
+    scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+    creds_info = dict(st.secrets["gcp_service_account"])
+    
+    pk = creds_info["private_key"]
+    if "\\n" in pk:
+        pk = pk.replace("\\n", "\n")
+    pk = pk.strip()
+    creds_info["private_key"] = pk
+    
+    creds = Credentials.from_service_account_info(creds_info, scopes=scope)
+    client = gspread.authorize(creds)
+    return client.open("App_Finanzas")
 
+# Ahora, si falla, verás el error técnico real de Python/Google
 sh = conectar_excel()
-
-if sh is None:
-    st.error("❌ No se pudo conectar con la base de datos de forma segura. Inténtalo más tarde.")
-    st.stop()
 
 col_titulo, col_salir = st.columns([0.8, 0.2])
 with col_titulo:
@@ -91,8 +82,8 @@ try:
 
     ws_movimientos = sh.worksheet("Movimientos")
     df_movimientos = pd.DataFrame(ws_movimientos.get_all_records())
-except Exception:
-    st.error("❌ Error al cargar los datos. Revisa la estructura del Excel.")
+except Exception as e:
+    st.error(f"❌ Error al cargar las pestañas: {e}")
     st.stop()
 
 def limpiar_numeros(serie):
