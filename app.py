@@ -42,7 +42,7 @@ if not check_password():
     st.stop()
 
 # ==========================================
-# APP PRINCIPAL (CONEXIÓN PROTEGIDA)
+# APP PRINCIPAL (CONEXIÓN PROTEGIDA Y LIMPIA)
 # ==========================================
 
 @st.cache_resource
@@ -50,32 +50,39 @@ def conectar_excel():
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         
-        # Validación de existencia de secretos
         if "gcp_service_account" not in st.secrets:
             st.error("Faltan las credenciales de Google en los Secrets.")
             return None
             
         creds_info = dict(st.secrets["gcp_service_account"])
         
-        # Limpieza de clave privada
+        # --- LIMPIEZA AGRESIVA DE LA PRIVATE KEY ---
         pk = creds_info.get("private_key", "")
-        if "\\n" in pk:
-            pk = pk.replace("\\n", "\n")
+        
+        # 1. Normalizamos los saltos de línea de texto (\n) a reales
+        pk = pk.replace("\\n", "\n")
+        
+        # 2. Eliminamos comillas accidentales que puedan venir del TOML
+        pk = pk.replace('"', '').replace("'", "")
+        
+        # 3. Limpiamos espacios en blanco al principio y final
         pk = pk.strip()
+        
         creds_info["private_key"] = pk
         
         creds = Credentials.from_service_account_info(creds_info, scopes=scope)
         client = gspread.authorize(creds)
         return client.open("App_Finanzas")
     except Exception as e:
-        # Mostramos un error controlado
+        # Imprimimos el error real en la consola de Streamlit pero mostramos algo limpio al usuario
+        print(f"DEBUG ERROR: {e}")
         st.error(f"❌ Error de conexión: {e}")
         return None
 
 sh = conectar_excel()
 
 if sh is None:
-    st.warning("⚠️ No se pudo establecer la conexión. Revisa los Secrets y permisos del Excel.")
+    st.warning("⚠️ No se pudo establecer la conexión. Revisa que la Private Key en los Secrets esté bien pegada.")
     st.stop()
 
 # Encabezado con botón de salida
