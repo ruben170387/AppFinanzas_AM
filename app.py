@@ -68,8 +68,11 @@ es_ah = df_ing.iloc[:, 0].astype(str).str.contains("Ahorro|%", case=False, na=Fa
 i_total = num(df_ing.loc[~es_ah].iloc[:, 1]).sum()
 f_total = num(df_fij['Importe']).sum()
 v_total = num(df_mov['Importe']).sum() if not df_mov.empty else 0
+
 p_ahorro = num(pd.Series([df_ing.loc[es_ah].iloc[0, 1]]))[0] if es_ah.any() else 20.0
 ahorro_obj = i_total * (p_ahorro / 100)
+
+# El dinero que realmente queda para gastar en el mes
 dispo = i_total - f_total - ahorro_obj - v_total
 
 hoy = datetime.now()
@@ -81,10 +84,10 @@ diario = dispo / dias_r if dias_r > 0 else 0
 st.title("🛡️ Mi Guardián Financiero")
 
 col1, col2 = st.columns(2)
-col1.metric("Disponible Mes", f"{disponible_mes:.2f} €")
-col2.metric("Tope para HOY", f"{diario_hoy:.2f} €", delta=f"{dias_restantes} días rest.")
+col1.metric("Disponible Mes", f"{dispo:.2f} €")
+col2.metric("Tope para HOY", f"{diario:.2f} €", delta=f"{dias_r} días rest.")
 
-# --- GRÁFICO (LEYENDA ABAJO Y VALORES CLAROS) ---
+# --- GRÁFICO (DOS COLUMNAS) ---
 st.markdown("### 📊 Comparativa Ingresos vs Distribución")
 data_chart = pd.DataFrame({
     "Columna": ["1. Ingresos", "2. Distribución", "2. Distribución", "2. Distribución", "2. Distribución"],
@@ -126,10 +129,11 @@ with st.form("gasto", clear_on_submit=True):
         categoria = st.selectbox("Categoría", ["Comida", "Supermercado", "Ocio", "Transporte", "Hogar", "Salud", "Ropa", "Otros"])
     with col_mon:
         monto = st.number_input("Euros", min_value=0.0, step=1.0)
+    
     if st.form_submit_button("Guardar Gasto"):
         if concepto and monto > 0:
             ws_mov.append_row([hoy.strftime("%Y-%m-%d"), concepto, categoria, monto])
-            st.success("✅ Gasto anotado")
+            st.success(f"✅ Anotado en {categoria}")
             time.sleep(1)
             st.rerun()
 
@@ -151,39 +155,38 @@ with exp_ing:
             time.sleep(1)
             st.rerun()
 
-# 2. GASTOS FIJOS (VUELTA AL SISTEMA DE FORMULARIOS + MODIFICAR)
+# 2. GASTOS FIJOS (Pestañas de acción)
 exp_fij = st.expander("Gestionar Gastos Fijos")
 with exp_fij:
-    # Ver tabla (Solo lectura)
     st.markdown("**Gastos actuales:**")
     st.dataframe(df_fij, use_container_width=True, hide_index=True)
     
     st.write("---")
     
-    # Tres acciones: Añadir, Modificar, Borrar
     tab_mod, tab_add, tab_del = st.tabs(["✏️ Modificar Precio", "➕ Añadir Nuevo", "🗑️ Borrar Gasto"])
     
     with tab_mod:
         with st.form("modificar_fijo"):
             opciones = df_fij.iloc[:, 0].tolist() if not df_fij.empty else []
             seleccion = st.selectbox("Selecciona gasto para cambiar su precio", opciones)
-            # Buscamos el precio actual para mostrarlo por defecto
-            precio_actual = 0.0
-            if seleccion:
-                precio_actual = float(df_fij[df_fij.iloc[:,0] == seleccion].iloc[0,1])
             
-            nuevo_precio = st.number_input("Nuevo Importe (€)", value=precio_actual)
+            # Buscamos el precio actual de la selección
+            p_actual = 0.0
+            if seleccion:
+                p_actual = float(df_fij[df_fij.iloc[:,0] == seleccion].iloc[0,1])
+            
+            n_precio = st.number_input("Nuevo Importe (€)", value=p_actual)
             
             if st.form_submit_button("Actualizar Importe"):
                 cell = ws_fij.find(seleccion)
-                ws_fij.update_cell(cell.row, 2, nuevo_precio)
-                st.success(f"Precio de {seleccion} actualizado a {nuevo_precio}€")
+                ws_fij.update_cell(cell.row, 2, n_precio)
+                st.success("Precio actualizado")
                 time.sleep(1)
                 st.rerun()
 
     with tab_add:
         with st.form("add_fijo", clear_on_submit=True):
-            n_fijo = st.text_input("Nombre del Gasto (ej. Netflix)")
+            n_fijo = st.text_input("Nombre del Gasto")
             i_fijo = st.number_input("Importe (€)", min_value=0.0)
             if st.form_submit_button("Añadir a la lista"):
                 if n_fijo and i_fijo > 0:
@@ -194,8 +197,8 @@ with exp_fij:
 
     with tab_del:
         with st.form("del_fijo"):
-            opciones = df_fij.iloc[:, 0].tolist() if not df_fij.empty else []
-            seleccion_del = st.selectbox("Selecciona gasto para ELIMINAR", opciones)
+            opciones_del = df_fij.iloc[:, 0].tolist() if not df_fij.empty else []
+            seleccion_del = st.selectbox("Selecciona gasto para ELIMINAR", opciones_del)
             if st.form_submit_button("Eliminar permanentemente"):
                 if seleccion_del:
                     cell = ws_fij.find(seleccion_del)
@@ -206,8 +209,8 @@ with exp_fij:
 
 # --- CIERRE DE SESIÓN ---
 st.write("---")
-_, col_logout, _ = st.columns([1, 1, 1])
-with col_logout:
+col_l, col_c, col_r = st.columns([1, 1, 1])
+with col_c:
     if st.button("Cerrar Sesión", use_container_width=True):
         st.session_state["autenticado"] = False
         st.rerun()
