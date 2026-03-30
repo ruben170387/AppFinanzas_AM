@@ -56,17 +56,17 @@ def conectar_excel():
             
         creds_info = dict(st.secrets["gcp_service_account"])
         
-        # --- LIMPIEZA AGRESIVA DE LA PRIVATE KEY ---
+        # --- LIMPIEZA MAESTRA DE LA LLAVE ---
         pk = creds_info.get("private_key", "")
         
-        # 1. Normalizamos los saltos de línea de texto (\n) a reales
+        # 1. Quitar comillas triples o simples que el TOML pueda estar enviando
+        pk = pk.strip().strip('"').strip("'")
+        
+        # 2. Convertir los \n escritos como texto a saltos de línea reales
         pk = pk.replace("\\n", "\n")
         
-        # 2. Eliminamos comillas accidentales que puedan venir del TOML
-        pk = pk.replace('"', '').replace("'", "")
-        
-        # 3. Limpiamos espacios en blanco al principio y final
-        pk = pk.strip()
+        # 3. Eliminar espacios accidentales en cada línea (frecuente al copiar/pegar)
+        pk = "\n".join([line.strip() for line in pk.split("\n")])
         
         creds_info["private_key"] = pk
         
@@ -74,15 +74,13 @@ def conectar_excel():
         client = gspread.authorize(creds)
         return client.open("App_Finanzas")
     except Exception as e:
-        # Imprimimos el error real en la consola de Streamlit pero mostramos algo limpio al usuario
-        print(f"DEBUG ERROR: {e}")
         st.error(f"❌ Error de conexión: {e}")
         return None
 
 sh = conectar_excel()
 
 if sh is None:
-    st.warning("⚠️ No se pudo establecer la conexión. Revisa que la Private Key en los Secrets esté bien pegada.")
+    st.warning("⚠️ No se pudo conectar. Revisa los Secrets y haz un 'Reboot app' en el menú 'Manage app'.")
     st.stop()
 
 # Encabezado con botón de salida
