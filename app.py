@@ -53,7 +53,8 @@ if sh is None: st.stop()
 try:
     ws_mov = sh.worksheet("Movimientos")
     df_mov = pd.DataFrame(ws_mov.get_all_records())
-    # Normalizamos columnas de Movimientos para evitar errores de mayúsculas/minúsculas
+    
+    # Normalización de columnas para evitar errores de nombres
     if not df_mov.empty:
         df_mov.columns = [str(c).strip().capitalize() for c in df_mov.columns]
 
@@ -85,6 +86,7 @@ hoy = datetime.now()
 mes_actual_str = hoy.strftime("%Y-%m")
 v_total = 0
 
+# Filtro inteligente de gastos variables solo del mes en curso
 if not df_mov.empty and 'Fecha' in df_mov.columns:
     df_mov['Fecha'] = pd.to_datetime(df_mov['Fecha'], errors='coerce')
     mask = (df_mov['Fecha'].dt.month == hoy.month) & (df_mov['Fecha'].dt.year == hoy.year)
@@ -107,7 +109,7 @@ c1.metric("Disponible Mes", f"{dispo:.2f} €")
 c2.metric("Para HOY", f"{diario:.2f} €")
 c3.metric("Ahorro Real", f"{ahorro_actual:.2f} €", delta=f"{ahorro_actual - ahorro_obj:.2f} vs meta")
 
-# --- GRÁFICO (COMPARATIVA) ---
+# --- GRÁFICO ---
 data_chart = pd.DataFrame({
     "Columna": ["1. Ingresos", "2. Distribución", "2. Distribución", "2. Distribución", "2. Distribución"],
     "Concepto": ["Ingresos Totales", "Gastos Fijos", "Gastos Variables", "Ahorro Objetivo", "Disponible"],
@@ -119,12 +121,14 @@ fig = px.bar(data_chart, x="Columna", y="Euros", color="Concepto", text_auto=".2
 fig.update_layout(legend=dict(orientation="h", y=-0.5, x=0.5, xanchor="center"), margin=dict(b=100))
 st.plotly_chart(fig, use_container_width=True)
 
-# Historial Balances
-with st.expander("📊 Ver Historial de Balances Mensuales"):
-    if not df_bal.empty:
-        st.dataframe(df_bal, use_container_width=True, hide_index=True)
-    else:
-        st.info("No hay balances cerrados todavía.")
+# --- HISTORIAL DE ÚLTIMOS MOVIMIENTOS (RECUPERADO) ---
+st.markdown("### 📝 Últimos 5 movimientos")
+if not df_mov.empty:
+    # Mostramos los 5 últimos registros en orden inverso (el más nuevo arriba)
+    columnas_ver = [c for c in df_mov.columns if c in ['Fecha', 'Concepto', 'Categoría', 'Importe']]
+    st.table(df_mov[columnas_ver].tail(5).iloc[::-1])
+else:
+    st.info("No hay gastos registrados este mes.")
 
 # --- REGISTRAR GASTO ---
 st.divider()
@@ -139,11 +143,19 @@ with st.form("gasto", clear_on_submit=True):
         st.success("✅ ¡Anotado!")
         time.sleep(1); st.rerun()
 
-# --- GESTIÓN DE CONFIGURACIÓN ---
+# --- CONFIGURACIÓN ---
 st.divider()
-st.subheader("⚙️ Configuración")
+st.subheader("⚙️ Configuración y Balances")
 
-# 1. INGRESOS
+# 1. HISTORIAL DE BALANCES
+exp_bal = st.expander("📊 Ver Historial de Meses Anteriores")
+with exp_bal:
+    if not df_bal.empty:
+        st.dataframe(df_bal, use_container_width=True, hide_index=True)
+    else:
+        st.info("No hay balances cerrados todavía.")
+
+# 2. SUELDOS
 exp_ing = st.expander("Modificar Sueldos")
 with exp_ing:
     with st.form("edit_ing"):
@@ -154,7 +166,7 @@ with exp_ing:
         if st.form_submit_button("💾 Guardar Cambios"):
             ws_ing.update(range_name='A2', values=nuevos_i); st.rerun()
 
-# 2. GASTOS FIJOS (VUELTA AL DISEÑO ORIGINAL PERFECTO)
+# 3. GASTOS FIJOS (DISEÑO DE 2 COLUMNAS)
 exp_fij = st.expander("Gestionar Gastos Fijos")
 with exp_fij:
     st.dataframe(df_fij, use_container_width=True, hide_index=True)
@@ -178,18 +190,18 @@ with exp_fij:
                     cell = ws_fij.find(seleccion)
                     ws_fij.delete_rows(cell.row); st.rerun()
 
-# 3. CIERRE DE MES
-exp_cie = st.expander("🔒 Finalizar y Guardar Mes")
+# 4. FINALIZAR MES
+exp_cie = st.expander("🔒 Cerrar Mes Actual")
 with exp_cie:
     diff = ahorro_actual - ahorro_obj
     if diff >= 0:
-        st.success(f"¡Objetivo cumplido! Sobran {diff:.2f} €")
+        st.success(f"¡Vas genial! Superas tu meta por {diff:.2f} €")
     else:
-        st.warning(f"Faltan {abs(diff):.2f} € para la meta")
+        st.warning(f"Ojo, vas {abs(diff):.2f} € por debajo del ahorro objetivo")
     
-    if st.button("🚀 GUARDAR BALANCE FINAL EN HISTORIAL"):
+    if st.button("🚀 GUARDAR BALANCE FINAL"):
         ws_bal.append_row([mes_actual_str, i_total, f_total, v_total, ahorro_actual, ahorro_obj])
-        st.success("Balance guardado correctamente.")
+        st.success("¡Balance guardado en el historial!")
         time.sleep(1); st.rerun()
 
 # --- SALIR ---
