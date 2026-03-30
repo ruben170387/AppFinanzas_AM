@@ -3,6 +3,8 @@ import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime
+import calendar
+import plotly.express as px
 import re
 
 # --- CONFIGURACIÓN DE PÁGINA ---
@@ -17,7 +19,7 @@ def conectar_excel():
         # 1. Cargamos la info de los secretos
         creds_info = dict(st.secrets["gcp_service_account"])
         
-        # 2. LIMPIEZA AGRESIVA DE LA CLAVE (Para evitar el error de Padding/PEM)
+        # 2. LIMPIEZA AGRESIVA DE LA CLAVE
         pk = creds_info["private_key"]
         if "\\n" in pk:
             pk = pk.replace("\\n", "\n")
@@ -40,7 +42,7 @@ sh = conectar_excel()
 
 if sh is None:
     st.warning("⚠️ La aplicación no pudo conectar con Google Sheets.")
-    st.info("Revisa que en los Secrets de Streamlit la 'private_key' empiece por '-----BEGIN PRIVATE KEY-----' y termine correctamente.")
+    st.info("Revisa que en los Secrets de Streamlit la 'private_key' esté correcta.")
     st.stop()
 
 st.title("🛡️ Mi Guardián Financiero")
@@ -59,21 +61,25 @@ except Exception as e:
     st.error(f"Error al leer las pestañas del Excel: {e}")
     st.stop()
 
+# --- FUNCIÓN ANTIMA-COMAS ---
+def limpiar_numeros(serie):
+    # Convierte a texto, cambia comas por puntos y fuerza a número
+    return pd.to_numeric(serie.astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
+
 # --- BLOQUE 1: CALCULADORA Y PREDICCIÓN ---
-# Extraemos sueldos y % de ahorro por su posición en la pestaña Config
-sueldo_1 = pd.to_numeric(df_ingresos.iloc[0, 1], errors='coerce')
-sueldo_2 = pd.to_numeric(df_ingresos.iloc[1, 1], errors='coerce')
-porcentaje_ahorro = pd.to_numeric(df_ingresos.iloc[2, 1], errors='coerce')
+# Usamos la función limpiadora por si metes comas en el Excel
+sueldo_1 = limpiar_numeros(pd.Series([df_ingresos.iloc[0, 1]]))[0]
+sueldo_2 = limpiar_numeros(pd.Series([df_ingresos.iloc[1, 1]]))[0]
+porcentaje_ahorro = limpiar_numeros(pd.Series([df_ingresos.iloc[2, 1]]))[0]
 
 total_ingresos = sueldo_1 + sueldo_2
-total_fijos = pd.to_numeric(df_fijos['Importe'], errors='coerce').sum()
+total_fijos = limpiar_numeros(df_fijos['Importe']).sum()
 
-# Calculamos el objetivo de ahorro usando el porcentaje del Excel
+# Calculamos el objetivo de ahorro
 ahorro_objetivo = total_ingresos * (porcentaje_ahorro / 100) 
 
 if not df_movimientos.empty:
-    # Aseguramos que 'Importe' sea numérico para sumar
-    df_movimientos['Importe'] = pd.to_numeric(df_movimientos['Importe'], errors='coerce')
+    df_movimientos['Importe'] = limpiar_numeros(df_movimientos['Importe'])
     gastos_variables_totales = df_movimientos['Importe'].sum()
 else:
     gastos_variables_totales = 0
@@ -81,7 +87,6 @@ else:
 disponible_mes = total_ingresos - total_fijos - ahorro_objetivo - gastos_variables_totales
 
 hoy = datetime.now()
-import calendar
 _, ultimo_dia_mes = calendar.monthrange(hoy.year, hoy.month)
 dias_restantes = ultimo_dia_mes - hoy.day + 1
 diario_hoy = disponible_mes / dias_restantes if dias_restantes > 0 else 0
@@ -93,6 +98,36 @@ with col1:
 with col2:
     st.metric("Tope recomendado para HOY", f"{diario_hoy:.2f} €", delta=f"Quedan {dias_restantes} días", delta_color="off")
 
+# --- NUEVA GRÁFICA DE BARRAS (INGRESOS VS DISTRIBUCIÓN) ---
+st.markdown("### 📊 Ingresos vs Distribución")
+
+datos_barras = pd.DataFrame({
+    "Grupo": ["1. Ingresos", "2. Gastos y Disponible", "2. Gastos y Disponible", "2. Gastos y Disponible", "2. Gastos y Disponible"],
+    "Categoría": ["Ingresos Totales", "Gastos Fijos", "Gastos Variables", "Ahorro Intocable", "Disponible (Solo para gastar)"],
+    "Cantidad": [total_ingresos, total_fijos, gastos_variables_totales, ahorro_objetivo, max(0, disponible_mes)]
+})
+
+fig = px.bar(
+    datos_barras, 
+    x="Grupo", 
+    y="Cantidad", 
+    color="Categoría",
+    text="Cantidad",
+    color_discrete_map={
+        "Ingresos Totales": "#2ECC71",             # Verde oscuro
+        "Gastos Fijos": "#E74C3C",                 # Rojo
+        "Gastos Variables": "#F39C12",             # Naranja
+        "Ahorro Intocable": "#3498DB",             # Azul (tu dinero guardado)
+        "Disponible (Solo para gastar)": "#1ABC9C" # Verde claro (tu dinero libre)
+    }
+)
+
+fig.update_traces(texttemplate='%{text:.2f} €', textposition='inside')
+fig.update_layout(xaxis_title="", yaxis_title="Euros (€)", showlegend=True, margin=dict(t=20, b=0, l=0, r=0))
+
+st.plotly_chart(fig, use_container_width=True)
+
+
 # --- BLOQUE 2: REGISTRO DE GASTO RÁPIDO ---
 st.divider()
 st.header("💸 Registrar Nuevo Gasto")
@@ -102,7 +137,8 @@ with st.form("nuevo_gasto", clear_on_submit=True):
         concepto = st.text_input("¿Qué has comprado?")
         categoria = st.selectbox("Categoría", ["Comida", "Ocio", "Transporte", "Ropa", "Otros"])
     with c2:
-        monto = st.number_input("Importe (€)", min_value=0.0, step=0.5)
+        # Añadimos format="%.2f" para forzar el comportamiento correcto con decimales
+        monto = st.number_input("Importe (€)", min_value=0.0, step=0.5, format="%.2f")
         fecha_gasto = st.date_input("Fecha", value=hoy)
     
     if st.form_submit_button("Guardar en Excel"):
@@ -126,7 +162,6 @@ with st.expander("⚙️ Editar Sueldos, Ahorro y Gastos Fijos"):
     
     st.subheader("Gastos Fijos")
     st.info("💡 Para añadir: escribe en la última fila vacía. Para borrar: marca la casilla gris a la izquierda de la fila y pulsa la tecla borrar/papelera.")
-    # hide_index=False para que se vea la casilla de selección
     edit_fijos = st.data_editor(df_fijos, num_rows="dynamic", use_container_width=True, key="ed_fij", hide_index=False)
     if st.button("Actualizar Gastos Fijos"):
         ws_fijos.update([edit_fijos.columns.values.tolist()] + edit_fijos.values.tolist())
