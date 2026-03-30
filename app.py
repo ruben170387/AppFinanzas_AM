@@ -63,20 +63,13 @@ except Exception as e:
 
 def num(s): return pd.to_numeric(s.astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
 
-# --- CÁLCULOS CORRECTOS ---
-# Identificamos qué filas son de ahorro para excluirlas del total de ingresos
+# --- CÁLCULOS ---
 es_ah = df_ing.iloc[:, 0].astype(str).str.contains("Ahorro|%", case=False, na=False)
-
-# Ingresos Reales: Solo sumamos las filas que NO son ahorro
 i_total = num(df_ing.loc[~es_ah].iloc[:, 1]).sum()
-
 f_total = num(df_fij['Importe']).sum()
 v_total = num(df_mov['Importe']).sum() if not df_mov.empty else 0
-
-# Porcentaje de ahorro
 p_ahorro = num(pd.Series([df_ing.loc[es_ah].iloc[0, 1]]))[0] if es_ah.any() else 20.0
 ahorro_obj = i_total * (p_ahorro / 100)
-
 dispo = i_total - f_total - ahorro_obj - v_total
 
 hoy = datetime.now()
@@ -91,7 +84,7 @@ col1, col2 = st.columns(2)
 col1.metric("Disponible Mes", f"{dispo:.2f} €")
 col2.metric("Límite HOY", f"{diario:.2f} €", delta=f"{dias_r} días rest.")
 
-# --- GRÁFICO MEJORADO ---
+# --- GRÁFICO ---
 st.markdown("### 📊 Comparativa Ingresos vs Distribución")
 data_chart = pd.DataFrame({
     "Columna": ["1. Ingresos", "2. Distribución", "2. Distribución", "2. Distribución", "2. Distribución"],
@@ -107,41 +100,46 @@ fig = px.bar(data_chart, x="Columna", y="Euros", color="Concepto", text="Euros",
                  "Ahorro": "#3498DB",
                  "Disponible": "#1ABC9C"
              })
-
-# Ajustes de visibilidad de valores y leyenda abajo
 fig.update_traces(texttemplate='%{text:.2f} €', textposition='inside', textfont_size=12)
 fig.update_layout(
-    xaxis_title="", 
-    yaxis_title="Euros (€)",
+    xaxis_title="", yaxis_title="Euros (€)",
     legend=dict(orientation="h", yanchor="bottom", y=-0.5, xanchor="center", x=0.5, title=""),
-    margin=dict(t=20, b=100, l=10, r=10),
-    height=500
+    margin=dict(t=20, b=100, l=10, r=10), height=500
 )
 st.plotly_chart(fig, use_container_width=True)
 
-# --- TABLA DE ÚLTIMOS MOVIMIENTOS ---
+# --- HISTORIAL ---
 st.markdown("### 📝 Últimos 5 movimientos")
 if not df_mov.empty:
-    # Mostramos los últimos 5 registros ordenados por el más reciente arriba
     st.table(df_mov.tail(5).iloc[::-1])
 else:
     st.info("Aún no hay movimientos registrados.")
 
-# --- SECCIÓN: REGISTRAR GASTO ---
+# --- FORMULARIO DE GASTO ACTUALIZADO CON CATEGORÍAS ---
 st.divider()
 st.subheader("💸 Registrar Gasto")
 with st.form("gasto", clear_on_submit=True):
-    c_con, c_mon = st.columns([2, 1])
-    concepto = c_con.text_input("¿En qué?")
-    monto = c_mon.number_input("Euros", min_value=0.0, step=1.0)
+    col_con, col_cat, col_mon = st.columns([2, 2, 1])
+    
+    with col_con:
+        concepto = st.text_input("¿En qué?")
+    
+    with col_cat:
+        # Aquí puedes personalizar la lista de categorías
+        categoria = st.selectbox("Categoría", ["Comida", "Supermercado", "Ocio", "Transporte", "Hogar", "Salud", "Ropa", "Otros"])
+    
+    with col_mon:
+        monto = st.number_input("Euros", min_value=0.0, step=1.0)
+    
     if st.form_submit_button("Guardar Gasto"):
         if concepto and monto > 0:
-            ws_mov.append_row([hoy.strftime("%Y-%m-%d"), concepto, "Gasto", monto])
-            st.success("✅ ¡Anotado!")
+            # Guardamos: Fecha, Concepto, Categoría, Importe
+            ws_mov.append_row([hoy.strftime("%Y-%m-%d"), concepto, categoria, monto])
+            st.success(f"✅ Anotado en {categoria}")
             time.sleep(1)
             st.rerun()
 
-# --- SECCIÓN: GESTIÓN DE DATOS FIJOS ---
+# --- GESTIÓN DE DATOS ---
 st.divider()
 st.subheader("⚙️ Configuración del Sistema")
 exp_ing = st.expander("Modificar Sueldos y % Ahorro")
@@ -179,9 +177,9 @@ with exp_fij:
                 ws_fij.delete_rows(cell.row)
                 st.rerun()
 
-# --- BOTÓN DE SALIDA (Ajustado para evitar cortes de texto) ---
+# --- CIERRE DE SESIÓN ---
 st.write("---")
-col_space, col_logout, col_space2 = st.columns([1, 1, 1])
+_, col_logout, _ = st.columns([1, 1, 1])
 with col_logout:
     if st.button("Cerrar Sesión", use_container_width=True):
         st.session_state["autenticado"] = False
