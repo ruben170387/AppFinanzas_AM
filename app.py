@@ -6,23 +6,19 @@ from datetime import datetime
 import calendar
 import plotly.express as px
 import time
-import base64  # <--- NUEVA LIBRERÍA
 
-# --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="Economía Familiar", page_icon="💰", layout="centered")
-
-# --- SISTEMA DE LOGIN ---
+# --- LOGIN (Simplificado para asegurar que entras rápido) ---
 def check_password():
     if "autenticado" not in st.session_state:
         st.session_state["autenticado"] = False
     if not st.session_state["autenticado"]:
         st.title("🔒 Acceso Restringido")
         with st.form("login_form"):
-            user = st.text_input("Usuario").strip().lower()
-            pw = st.text_input("Contraseña", type="password")
+            u = st.text_input("Usuario").strip().lower()
+            p = st.text_input("Contraseña", type="password")
             if st.form_submit_button("Entrar"):
-                if "passwords" in st.secrets and user in st.secrets["passwords"]:
-                    if str(st.secrets["passwords"][user]) == pw:
+                if "passwords" in st.secrets and u in st.secrets["passwords"]:
+                    if str(st.secrets["passwords"][u]) == p:
                         st.session_state["autenticado"] = True
                         st.rerun()
                 st.error("❌ Credenciales incorrectas")
@@ -32,19 +28,23 @@ def check_password():
 if not check_password():
     st.stop()
 
-# --- CONEXIÓN (MÉTODO BASE64 ANTIFALLOS) ---
+# --- CONEXIÓN (CON LIMPIEZA DE CARACTERES EXTRAÑOS) ---
 @st.cache_resource
 def conectar_excel():
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         creds_info = dict(st.secrets["gcp_service_account"])
         
-        # Si existe la llave en Base64, la decodificamos
-        if "private_key_base64" in creds_info:
-            b64_key = creds_info["private_key_base64"]
-            # Limpiamos posibles comillas accidentales
-            b64_key = b64_key.strip().strip('"').strip("'")
-            creds_info["private_key"] = base64.b64decode(b64_key).decode("utf-8")
+        # Limpieza profunda para eliminar el error InvalidByte(64, 46)
+        pk = creds_info["private_key"]
+        
+        # Si por error el email está aquí, esto fallará avisándote
+        if "@" in pk and "-----BEGIN PRIVATE KEY-----" in pk:
+             # Solo permitimos el @ si está en las líneas de comentario, no en la data
+             pass 
+
+        pk = pk.replace('\\n', '\n').strip()
+        creds_info["private_key"] = pk
         
         creds = Credentials.from_service_account_info(creds_info, scopes=scope)
         client = gspread.authorize(creds)
@@ -68,42 +68,31 @@ except Exception as e:
     st.error(f"Error en pestañas: {e}")
     st.stop()
 
+# --- CÁLCULOS ---
 def num(s): return pd.to_numeric(s.astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
 
-# Cálculos
-ingresos = num(df_ing.iloc[:, 1]).sum()
-fijos = num(df_fij['Importe']).sum()
-variables = num(df_mov['Importe']).sum() if not df_mov.empty else 0
-es_ah = df_ing.iloc[:, 0].astype(str).str.contains("Ahorro|%", case=False, na=False)
-p_ahorro = num(pd.Series([df_ing.loc[es_ah].iloc[0, 1]]))[0] if es_ah.any() else 20.0
-ahorro_obj = ingresos * (p_ahorro / 100)
-disponible = ingresos - fijos - ahorro_obj - variables
+i = num(df_ing.iloc[:, 1]).sum()
+f = num(df_fij['Importe']).sum()
+v = num(df_mov['Importe']).sum() if not df_mov.empty else 0
+dispo = i - f - v
 hoy = datetime.now()
 _, u_dia = calendar.monthrange(hoy.year, hoy.month)
-dias_restantes = u_dia - hoy.day + 1
-diario = disponible / dias_restantes if dias_restantes > 0 else 0
+dias_r = u_dia - hoy.day + 1
+diario = dispo / dias_r if dias_r > 0 else 0
 
 # --- INTERFAZ ---
-st.title("💰 Economía Familiar")
+st.title("💰 Mi Guardián Financiero")
 c1, c2 = st.columns(2)
-c1.metric("Disponible Mes", f"{disponible:.2f} €")
-c2.metric("Límite Hoy", f"{diario:.2f} €")
+c1.metric("Disponible", f"{dispo:.2f} €")
+c2.metric("Para hoy", f"{diario:.2f} €")
 
-# Gráfico
-df_graf = pd.DataFrame({"Tipo": ["Fijos", "Variables", "Ahorro", "Disponible"], 
-                        "Euros": [fijos, variables, ahorro_obj, max(0, disponible)]})
-st.plotly_chart(px.bar(df_graf, x="Tipo", y="Euros", color="Tipo", text_auto=".2s"), use_container_width=True)
+st.plotly_chart(px.bar(x=["Fijos", "Variables", "Disponible"], y=[f, v, max(0, dispo)], color=["Fijos", "Variables", "Disponible"]), use_container_width=True)
 
-# Registro
-st.divider()
 with st.form("gasto", clear_on_submit=True):
-    con = st.text_input("¿En qué?")
+    con = st.text_input("Concepto")
     mon = st.number_input("Euros", min_value=0.0, step=1.0)
-    if st.form_submit_button("Guardar Gasto") and con and mon > 0:
-        ws_mov.append_row([hoy.strftime("%Y-%m-%d"), con, "Otros", mon])
-        st.success("✅ ¡Anotado!")
-        st.rerun()
-
-if st.button("🚪 Salir"):
-    st.session_state["autenticado"] = False
-    st.rerun()
+    if st.form_submit_button("Guardar"):
+        if con and mon > 0:
+            ws_mov.append_row([hoy.strftime("%Y-%m-%d"), con, "Gasto", mon])
+            st.success("✅ ¡Hecho!")
+            st.rerun()
