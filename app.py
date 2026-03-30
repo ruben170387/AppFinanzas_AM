@@ -53,11 +53,10 @@ if sh is None: st.stop()
 try:
     ws_mov = sh.worksheet("Movimientos")
     df_mov = pd.DataFrame(ws_mov.get_all_records())
-    
-    # NORMALIZAR COLUMNAS DE MOVIMIENTOS (Para evitar el KeyError)
+    # Normalizamos columnas de Movimientos para evitar errores de mayúsculas/minúsculas
     if not df_mov.empty:
         df_mov.columns = [str(c).strip().capitalize() for c in df_mov.columns]
-    
+
     ws_ing = sh.worksheet("Config")
     df_ing = pd.DataFrame(ws_ing.get_all_records())
     
@@ -82,7 +81,6 @@ es_ah = df_ing.iloc[:, 0].astype(str).str.contains("Ahorro|%", case=False, na=Fa
 i_total = num(df_ing.loc[~es_ah].iloc[:, 1]).sum()
 f_total = num(df_fij['Importe']).sum()
 
-# Gastos Variables del mes actual (Corregido con validación de columna)
 hoy = datetime.now()
 mes_actual_str = hoy.strftime("%Y-%m")
 v_total = 0
@@ -91,14 +89,10 @@ if not df_mov.empty and 'Fecha' in df_mov.columns:
     df_mov['Fecha'] = pd.to_datetime(df_mov['Fecha'], errors='coerce')
     mask = (df_mov['Fecha'].dt.month == hoy.month) & (df_mov['Fecha'].dt.year == hoy.year)
     v_total = num(df_mov.loc[mask, 'Importe']).sum()
-elif not df_mov.empty:
-    st.warning(f"⚠️ La columna 'Fecha' no existe. Columnas encontradas: {list(df_mov.columns)}")
 
 p_ahorro = num(pd.Series([df_ing.loc[es_ah].iloc[0, 1]]))[0] if es_ah.any() else 20.0
 ahorro_obj = i_total * (p_ahorro / 100)
 dispo = i_total - f_total - ahorro_obj - v_total
-
-# Ahorro Real Actual
 ahorro_actual = i_total - f_total - v_total
 
 _, u_dia = calendar.monthrange(hoy.year, hoy.month)
@@ -111,10 +105,9 @@ st.title("🛡️ Mi Guardián Financiero")
 c1, c2, c3 = st.columns(3)
 c1.metric("Disponible Mes", f"{dispo:.2f} €")
 c2.metric("Para HOY", f"{diario:.2f} €")
-c3.metric("Ahorro Real Hoy", f"{ahorro_actual:.2f} €", 
-          delta=f"{ahorro_actual - ahorro_obj:.2f} € vs meta")
+c3.metric("Ahorro Real", f"{ahorro_actual:.2f} €", delta=f"{ahorro_actual - ahorro_obj:.2f} vs meta")
 
-# Gráfico
+# --- GRÁFICO (COMPARATIVA) ---
 data_chart = pd.DataFrame({
     "Columna": ["1. Ingresos", "2. Distribución", "2. Distribución", "2. Distribución", "2. Distribución"],
     "Concepto": ["Ingresos Totales", "Gastos Fijos", "Gastos Variables", "Ahorro Objetivo", "Disponible"],
@@ -127,11 +120,11 @@ fig.update_layout(legend=dict(orientation="h", y=-0.5, x=0.5, xanchor="center"),
 st.plotly_chart(fig, use_container_width=True)
 
 # Historial Balances
-with st.expander("📊 Ver Historial de Balances"):
+with st.expander("📊 Ver Historial de Balances Mensuales"):
     if not df_bal.empty:
         st.dataframe(df_bal, use_container_width=True, hide_index=True)
     else:
-        st.info("No hay balances guardados.")
+        st.info("No hay balances cerrados todavía.")
 
 # --- REGISTRAR GASTO ---
 st.divider()
@@ -144,44 +137,65 @@ with st.form("gasto", clear_on_submit=True):
     if st.form_submit_button("Guardar Gasto") and con and mon > 0:
         ws_mov.append_row([hoy.strftime("%Y-%m-%d"), con, cat, mon])
         st.success("✅ ¡Anotado!")
-        time.sleep(1)
-        st.rerun()
+        time.sleep(1); st.rerun()
 
-# --- GESTIÓN Y CIERRE ---
+# --- GESTIÓN DE CONFIGURACIÓN ---
 st.divider()
-st.subheader("⚙️ Gestión y Cierre")
-tab1, tab2, tab3 = st.tabs(["💰 Sueldos", "🏠 Fijos", "🏁 Finalizar Mes"])
+st.subheader("⚙️ Configuración")
 
-with tab1:
+# 1. INGRESOS
+exp_ing = st.expander("Modificar Sueldos")
+with exp_ing:
     with st.form("edit_ing"):
         nuevos_i = []
         for index, row in df_ing.iterrows():
             val = st.number_input(f"{row[0]}", value=float(num(pd.Series(row[1]))[0]))
             nuevos_i.append([row[0], val])
-        if st.form_submit_button("Actualizar Sueldos"):
+        if st.form_submit_button("💾 Guardar Cambios"):
             ws_ing.update(range_name='A2', values=nuevos_i); st.rerun()
 
-with tab2:
+# 2. GASTOS FIJOS (VUELTA AL DISEÑO ORIGINAL PERFECTO)
+exp_fij = st.expander("Gestionar Gastos Fijos")
+with exp_fij:
     st.dataframe(df_fij, use_container_width=True, hide_index=True)
-    with st.form("add_fijo"):
-        n_f = st.text_input("Nombre"); i_f = st.number_input("Importe", min_value=0.0)
-        if st.form_submit_button("Añadir"):
-            ws_fij.append_row([n_f, i_f]); st.rerun()
+    st.write("---")
+    col_add, col_del = st.columns(2)
+    with col_add:
+        with st.form("add_fijo", clear_on_submit=True):
+            st.markdown("**➕ Añadir Fijo**")
+            n_f = st.text_input("Nombre")
+            i_f = st.number_input("Importe (€)", min_value=0.0)
+            if st.form_submit_button("Añadir"):
+                if n_f and i_f > 0:
+                    ws_fij.append_row([n_f, i_f]); st.rerun()
+    with col_del:
+        with st.form("del_fijo"):
+            st.markdown("**🗑️ Borrar Fijo**")
+            opciones = df_fij.iloc[:, 0].tolist() if not df_fij.empty else []
+            seleccion = st.selectbox("Seleccionar", opciones)
+            if st.form_submit_button("Eliminar"):
+                if seleccion:
+                    cell = ws_fij.find(seleccion)
+                    ws_fij.delete_rows(cell.row); st.rerun()
 
-with tab3:
+# 3. CIERRE DE MES
+exp_cie = st.expander("🔒 Finalizar y Guardar Mes")
+with exp_cie:
     diff = ahorro_actual - ahorro_obj
     if diff >= 0:
-        st.success(f"¡Vas genial! Superas tu meta por {diff:.2f} €")
+        st.success(f"¡Objetivo cumplido! Sobran {diff:.2f} €")
     else:
-        st.warning(f"Ojo, vas {abs(diff):.2f} € por debajo del ahorro objetivo")
+        st.warning(f"Faltan {abs(diff):.2f} € para la meta")
     
-    if st.button("💾 GUARDAR BALANCE FINAL DEL MES"):
+    if st.button("🚀 GUARDAR BALANCE FINAL EN HISTORIAL"):
         ws_bal.append_row([mes_actual_str, i_total, f_total, v_total, ahorro_actual, ahorro_obj])
-        st.success("Balance guardado.")
+        st.success("Balance guardado correctamente.")
         time.sleep(1); st.rerun()
 
 # --- SALIR ---
 st.write("---")
-if st.button("Cerrar Sesión", use_container_width=True):
-    st.session_state["autenticado"] = False
-    st.rerun()
+cl, cc, cr = st.columns([1, 1, 1])
+with cc:
+    if st.button("Cerrar Sesión", use_container_width=True):
+        st.session_state["autenticado"] = False
+        st.rerun()
