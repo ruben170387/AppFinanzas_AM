@@ -7,10 +7,10 @@ import calendar
 import plotly.express as px
 import time
 
-# --- CONFIGURACIÓN DE PÁGINA ---
+# --- CONFIGURACIÓN ---
 st.set_page_config(page_title="Economía Familiar", page_icon="💰", layout="centered")
 
-# --- SISTEMA DE LOGIN ---
+# --- LOGIN ---
 def check_password():
     if "autenticado" not in st.session_state:
         st.session_state["autenticado"] = False
@@ -31,7 +31,7 @@ def check_password():
 if not check_password():
     st.stop()
 
-# --- CONEXIÓN MAESTRA ---
+# --- CONEXIÓN ---
 @st.cache_resource
 def conectar_excel():
     try:
@@ -57,160 +57,127 @@ try:
     df_ing = pd.DataFrame(ws_ing.get_all_records())
     ws_fij = sh.worksheet("Gastos_Fijos")
     df_fij = pd.DataFrame(ws_fij.get_all_records())
+    
+    # Nueva pestaña para el histórico
+    try:
+        ws_bal = sh.worksheet("Balances")
+    except:
+        # Si no existe, la creamos (solo la primera vez)
+        ws_bal = sh.add_worksheet(title="Balances", rows="100", cols="10")
+        ws_bal.append_row(["Mes", "Ingresos", "Fijos", "Variables", "Ahorro_Real"])
+    
+    df_bal = pd.DataFrame(ws_bal.get_all_records())
 except Exception as e:
     st.error(f"Error al cargar pestañas: {e}")
     st.stop()
 
 def num(s): return pd.to_numeric(s.astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
 
-# --- CÁLCULOS (FILTRANDO AHORRO DE INGRESOS) ---
+# --- CÁLCULOS MES ACTUAL ---
 es_ah = df_ing.iloc[:, 0].astype(str).str.contains("Ahorro|%", case=False, na=False)
 i_total = num(df_ing.loc[~es_ah].iloc[:, 1]).sum()
 f_total = num(df_fij['Importe']).sum()
-v_total = num(df_mov['Importe']).sum() if not df_mov.empty else 0
+
+# Filtrar movimientos solo del mes actual para el disponible
+hoy = datetime.now()
+mes_actual_str = hoy.strftime("%Y-%m")
+if not df_mov.empty:
+    df_mov['Fecha'] = pd.to_datetime(df_mov['Fecha'], errors='coerce')
+    # Solo sumamos los gastos del mes y año en curso
+    mask = (df_mov['Fecha'].dt.month == hoy.month) & (df_mov['Fecha'].dt.year == hoy.year)
+    v_total = num(df_mov.loc[mask, 'Importe']).sum()
+else:
+    v_total = 0
 
 p_ahorro = num(pd.Series([df_ing.loc[es_ah].iloc[0, 1]]))[0] if es_ah.any() else 20.0
 ahorro_obj = i_total * (p_ahorro / 100)
-
-# El dinero que realmente queda para gastar en el mes
 dispo = i_total - f_total - ahorro_obj - v_total
 
-hoy = datetime.now()
 _, u_dia = calendar.monthrange(hoy.year, hoy.month)
 dias_r = u_dia - hoy.day + 1
 diario = dispo / dias_r if dias_r > 0 else 0
 
-# --- INTERFAZ ---
+# --- INTERFAZ PRINCIPAL ---
 st.title("🛡️ Mi Guardián Financiero")
 
-col1, col2 = st.columns(2)
-col1.metric("Disponible Mes", f"{dispo:.2f} €")
-col2.metric("Tope para HOY", f"{diario:.2f} €", delta=f"{dias_r} días rest.")
+# Resumen rápido
+c1, c2, c3 = st.columns(3)
+c1.metric("Disponible Mes", f"{dispo:.2f} €")
+c2.metric("Para HOY", f"{diario:.2f} €")
+c3.metric("Ahorro Acumulado", f"{i_total - f_total - v_total:.2f} €")
 
-# --- GRÁFICO (DOS COLUMNAS) ---
-st.markdown("### 📊 Comparativa Ingresos vs Distribución")
+# --- GRÁFICO ---
 data_chart = pd.DataFrame({
     "Columna": ["1. Ingresos", "2. Distribución", "2. Distribución", "2. Distribución", "2. Distribución"],
-    "Concepto": ["Ingresos Totales", "Gastos Fijos", "Gastos Variables", "Ahorro", "Disponible"],
+    "Concepto": ["Ingresos Totales", "Gastos Fijos", "Gastos Variables", "Ahorro Objetivo", "Disponible"],
     "Euros": [i_total, f_total, v_total, ahorro_obj, max(0, dispo)]
 })
-
-fig = px.bar(data_chart, x="Columna", y="Euros", color="Concepto", text="Euros",
-             color_discrete_map={
-                 "Ingresos Totales": "#2ECC71",
-                 "Gastos Fijos": "#E74C3C",
-                 "Gastos Variables": "#F39C12",
-                 "Ahorro": "#3498DB",
-                 "Disponible": "#1ABC9C"
-             })
-fig.update_traces(texttemplate='%{text:.2f} €', textposition='inside', textfont_size=12)
-fig.update_layout(
-    xaxis_title="", yaxis_title="Euros (€)",
-    legend=dict(orientation="h", yanchor="bottom", y=-0.5, xanchor="center", x=0.5, title=""),
-    margin=dict(t=20, b=100, l=10, r=10), height=500
-)
+fig = px.bar(data_chart, x="Columna", y="Euros", color="Concepto", text_auto=".2f",
+             color_discrete_map={"Ingresos Totales": "#2ECC71", "Gastos Fijos": "#E74C3C", 
+                                "Gastos Variables": "#F39C12", "Ahorro Objetivo": "#3498DB", "Disponible": "#1ABC9C"})
+fig.update_layout(legend=dict(orientation="h", y=-0.5, x=0.5, xanchor="center"), margin=dict(b=100))
 st.plotly_chart(fig, use_container_width=True)
 
-# --- HISTORIAL (ÚLTIMOS 5) ---
-st.markdown("### 📝 Últimos 5 movimientos")
-if not df_mov.empty:
-    st.table(df_mov.tail(5).iloc[::-1])
-else:
-    st.info("Aún no hay movimientos registrados.")
+# --- HISTÓRICO DE MESES ---
+with st.expander("📊 Ver Balance de Meses Anteriores"):
+    if not df_bal.empty:
+        st.dataframe(df_bal, use_container_width=True, hide_index=True)
+        fig_hist = px.line(df_bal, x="Mes", y="Ahorro_Real", title="Evolución de tu Ahorro", markers=True)
+        st.plotly_chart(fig_hist, use_container_width=True)
+    else:
+        st.info("Aún no hay meses cerrados en el historial.")
 
 # --- REGISTRAR GASTO ---
 st.divider()
 st.subheader("💸 Registrar Gasto")
 with st.form("gasto", clear_on_submit=True):
     col_con, col_cat, col_mon = st.columns([2, 2, 1])
-    with col_con:
-        concepto = st.text_input("¿En qué?")
-    with col_cat:
-        categoria = st.selectbox("Categoría", ["Comida", "Supermercado", "Ocio", "Transporte", "Hogar", "Salud", "Ropa", "Otros"])
-    with col_mon:
-        monto = st.number_input("Euros", min_value=0.0, step=1.0)
-    
-    if st.form_submit_button("Guardar Gasto"):
-        if concepto and monto > 0:
-            ws_mov.append_row([hoy.strftime("%Y-%m-%d"), concepto, categoria, monto])
-            st.success(f"✅ Anotado en {categoria}")
-            time.sleep(1)
-            st.rerun()
+    con = col_con.text_input("¿En qué?")
+    cat = col_cat.selectbox("Categoría", ["Comida", "Super", "Ocio", "Transporte", "Hogar", "Otros"])
+    mon = col_mon.number_input("Euros", min_value=0.0, step=1.0)
+    if st.form_submit_button("Guardar Gasto") and con and mon > 0:
+        ws_mov.append_row([hoy.strftime("%Y-%m-%d"), con, cat, mon])
+        st.success("✅ ¡Anotado!")
+        time.sleep(1)
+        st.rerun()
 
-# --- GESTIÓN DE CONFIGURACIÓN ---
+# --- CONFIGURACIÓN Y CIERRE DE MES ---
 st.divider()
-st.subheader("⚙️ Configuración del Sistema")
+st.subheader("⚙️ Gestión y Cierre")
 
-# 1. INGRESOS
-exp_ing = st.expander("Sueldos y Ahorro")
-with exp_ing:
-    with st.form("edit_ingresos"):
-        nuevos_ingresos = []
+tab1, tab2, tab3 = st.tabs(["💰 Ingresos/Sueldos", "🏠 Gastos Fijos", "🔒 Finalizar Mes"])
+
+with tab1:
+    with st.form("edit_ing"):
+        st.write(f"Sueldos para **{calendar.month_name[hoy.month]}**:")
+        nuevos_i = []
         for index, row in df_ing.iterrows():
             val = st.number_input(f"{row[0]}", value=float(num(pd.Series(row[1]))[0]))
-            nuevos_ingresos.append([row[0], val])
-        if st.form_submit_button("💾 Guardar Sueldos"):
-            ws_ing.update(range_name='A2', values=nuevos_ingresos)
-            st.success("Ingresos actualizados")
-            time.sleep(1)
+            nuevos_i.append([row[0], val])
+        if st.form_submit_button("Actualizar Sueldos"):
+            ws_ing.update(range_name='A2', values=nuevos_i)
             st.rerun()
 
-# 2. GASTOS FIJOS (Pestañas de acción)
-exp_fij = st.expander("Gestionar Gastos Fijos")
-with exp_fij:
-    st.markdown("**Gastos actuales:**")
+with tab2:
     st.dataframe(df_fij, use_container_width=True, hide_index=True)
-    
-    st.write("---")
-    
-    tab_mod, tab_add, tab_del = st.tabs(["✏️ Modificar Precio", "➕ Añadir Nuevo", "🗑️ Borrar Gasto"])
-    
-    with tab_mod:
-        with st.form("modificar_fijo"):
-            opciones = df_fij.iloc[:, 0].tolist() if not df_fij.empty else []
-            seleccion = st.selectbox("Selecciona gasto para cambiar su precio", opciones)
-            
-            # Buscamos el precio actual de la selección
-            p_actual = 0.0
-            if seleccion:
-                p_actual = float(df_fij[df_fij.iloc[:,0] == seleccion].iloc[0,1])
-            
-            n_precio = st.number_input("Nuevo Importe (€)", value=p_actual)
-            
-            if st.form_submit_button("Actualizar Importe"):
-                cell = ws_fij.find(seleccion)
-                ws_fij.update_cell(cell.row, 2, n_precio)
-                st.success("Precio actualizado")
-                time.sleep(1)
-                st.rerun()
+    with st.form("add_fijo"):
+        n_f = st.text_input("Nuevo Gasto Fijo")
+        i_f = st.number_input("Importe", min_value=0.0)
+        if st.form_submit_button("Añadir"):
+            ws_fij.append_row([n_f, i_f]); st.rerun()
 
-    with tab_add:
-        with st.form("add_fijo", clear_on_submit=True):
-            n_fijo = st.text_input("Nombre del Gasto")
-            i_fijo = st.number_input("Importe (€)", min_value=0.0)
-            if st.form_submit_button("Añadir a la lista"):
-                if n_fijo and i_fijo > 0:
-                    ws_fij.append_row([n_fijo, i_fijo])
-                    st.success("Gasto añadido")
-                    time.sleep(1)
-                    st.rerun()
-
-    with tab_del:
-        with st.form("del_fijo"):
-            opciones_del = df_fij.iloc[:, 0].tolist() if not df_fij.empty else []
-            seleccion_del = st.selectbox("Selecciona gasto para ELIMINAR", opciones_del)
-            if st.form_submit_button("Eliminar permanentemente"):
-                if seleccion_del:
-                    cell = ws_fij.find(seleccion_del)
-                    ws_fij.delete_rows(cell.row)
-                    st.success("Gasto eliminado")
-                    time.sleep(1)
-                    st.rerun()
-
-# --- CIERRE DE SESIÓN ---
-st.write("---")
-col_l, col_c, col_r = st.columns([1, 1, 1])
-with col_c:
-    if st.button("Cerrar Sesión", use_container_width=True):
-        st.session_state["autenticado"] = False
+with tab3:
+    st.warning("Esto guardará el resumen de este mes en el historial.")
+    if st.button("🚀 CERRAR MES Y GUARDAR BALANCE"):
+        # Guardamos la foto actual en la hoja de Balances
+        ahorro_real = i_total - f_total - v_total
+        ws_bal.append_row([mes_actual_str, i_total, f_total, v_total, ahorro_real])
+        st.success(f"Balance de {mes_actual_str} guardado correctamente.")
+        time.sleep(2)
         st.rerun()
+
+# --- SALIR ---
+st.write("---")
+if st.button("Cerrar Sesión", use_container_width=True):
+    st.session_state["autenticado"] = False
+    st.rerun()
