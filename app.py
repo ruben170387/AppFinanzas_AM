@@ -20,10 +20,8 @@ def check_password():
             u = st.text_input("Usuario").strip().lower()
             p = st.text_input("Contraseña", type="password")
             if st.form_submit_button("Entrar"):
-                # Verificación robusta de la existencia de la tabla passwords
                 if "passwords" in st.secrets and u in st.secrets["passwords"]:
-                    # Convertimos a string por si el TOML interpreta el password como número
-                    if str(st.secrets["passwords"][u]) == str(p):
+                    if str(st.secrets["passwords"][u]) == p:
                         st.session_state["autenticado"] = True
                         st.rerun()
                 st.error("❌ Credenciales incorrectas")
@@ -33,27 +31,14 @@ def check_password():
 if not check_password():
     st.stop()
 
-# --- CONEXIÓN MAESTRA (OPTIMIZADA PARA TOML MULTILÍNEA) ---
+# --- CONEXIÓN MAESTRA ---
 @st.cache_resource
 def conectar_excel():
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        
-        # 1. Cargamos el diccionario de secretos (Copia profunda para evitar modificar st.secrets)
         creds_info = dict(st.secrets["gcp_service_account"])
-        
-        # 2. Limpieza Inteligente de la clave privada
-        pk = creds_info["private_key"]
-        
-        # Si por alguna razón el TOML viene con \n literales (texto), los convertimos.
-        # Si ya vienen como saltos de línea (comillas triples), esto no romperá nada.
-        if "\\n" in pk:
-            pk = pk.replace("\\n", "\n")
-        
-        # Eliminamos espacios en blanco accidentales al inicio/final del bloque
-        creds_info["private_key"] = pk.strip()
-        
-        # 3. Autorización
+        pk = creds_info["private_key"].replace("\\n", "\n").strip().strip('"').strip("'")
+        creds_info["private_key"] = pk
         creds = Credentials.from_service_account_info(creds_info, scopes=scope)
         client = gspread.authorize(creds)
         return client.open("App_Finanzas")
@@ -62,90 +47,131 @@ def conectar_excel():
         return None
 
 sh = conectar_excel()
-
-if sh is None:
-    st.warning("⚠️ Error en la clave privada. Asegúrate de que el TOML usa ''' (comillas triples) para la clave.")
-    st.stop()
+if sh is None: st.stop()
 
 # --- CARGA DE DATOS ---
 try:
-    # Obtenemos las hojas
     ws_mov = sh.worksheet("Movimientos")
-    ws_ing = sh.worksheet("Config")
-    ws_fij = sh.worksheet("Gastos_Fijos")
-    
-    # Cargamos a DataFrames
     df_mov = pd.DataFrame(ws_mov.get_all_records())
+    ws_ing = sh.worksheet("Config")
     df_ing = pd.DataFrame(ws_ing.get_all_records())
+    ws_fij = sh.worksheet("Gastos_Fijos")
     df_fij = pd.DataFrame(ws_fij.get_all_records())
 except Exception as e:
-    st.error(f"❌ Error al leer las pestañas del Excel: {e}")
+    st.error(f"Error al cargar pestañas: {e}")
     st.stop()
 
-# Función para limpiar y convertir números
-def num(s): 
-    # Aseguramos que sea string, quitamos moneda si existe, cambiamos coma por punto
-    s_clean = s.astype(str).str.replace('€', '').str.replace(',', '.').str.strip()
-    return pd.to_numeric(s_clean, errors='coerce').fillna(0)
+def num(s): return pd.to_numeric(s.astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
 
 # --- CÁLCULOS ---
-# Ingresos: Sumamos la segunda columna de la pestaña Config
-i = num(df_ing.iloc[:, 1]).sum()
+i_total = num(df_ing.iloc[:, 1]).sum()
+f_total = num(df_fij['Importe']).sum()
+v_total = num(df_mov['Importe']).sum() if not df_mov.empty else 0
+es_ah = df_ing.iloc[:, 0].astype(str).str.contains("Ahorro|%", case=False, na=False)
+p_ahorro = num(pd.Series([df_ing.loc[es_ah].iloc[0, 1]]))[0] if es_ah.any() else 20.0
+ahorro_obj = i_total * (p_ahorro / 100)
+dispo = i_total - f_total - ahorro_obj - v_total
 
-# Fijos: Sumamos la columna 'Importe'
-f = num(df_fij['Importe']).sum() if 'Importe' in df_fij.columns else 0
-
-# Variables: Sumamos 'Importe' de Movimientos
-v = num(df_mov['Importe']).sum() if not df_mov.empty and 'Importe' in df_mov.columns else 0
-
-# Lógica de Ahorro
-p_ahorro = 20.0 # Por defecto 20%
-if not df_ing.empty:
-    es_ah = df_ing.iloc[:, 0].astype(str).str.contains("Ahorro|%", case=False, na=False)
-    if es_ah.any():
-        val_ahorro = df_ing.loc[es_ah].iloc[0, 1]
-        p_ahorro = float(num(pd.Series([val_ahorro]))[0])
-
-ahorro_obj = i * (p_ahorro / 100)
-dispo = i - f - ahorro_obj - v
-
-# Cálculo de tope diario
 hoy = datetime.now()
 _, u_dia = calendar.monthrange(hoy.year, hoy.month)
 dias_r = u_dia - hoy.day + 1
 diario = dispo / dias_r if dias_r > 0 else 0
 
 # --- INTERFAZ ---
-st.title("💰 Mi Guardián Financiero")
+st.title("🛡️ Mi Guardián Financiero")
 
-c1, c2 = st.columns(2)
-c1.metric("Disponible Mes", f"{dispo:.2f} €")
-c2.metric("Para HOY", f"{diario:.2f} €", delta=f"{dias_r} días restantes")
+col1, col2 = st.columns(2)
+col1.metric("Disponible Mes", f"{dispo:.2f} €")
+col2.metric("Límite HOY", f"{diario:.2f} €", delta=f"{dias_r} días rest.")
 
-# Gráfico de distribución
-st.markdown("### 📊 Estado de Gastos")
-df_graf = pd.DataFrame({
-    "Concepto": ["Fijos", "Variables", "Ahorro", "Disponible"],
-    "Euros": [f, v, ahorro_obj, max(0, dispo)]
+# --- GRÁFICO DE DOS COLUMNAS ---
+st.markdown("### 📊 Comparativa Ingresos vs Distribución")
+data_chart = pd.DataFrame({
+    "Columna": ["1. Ingresos", "2. Distribución", "2. Distribución", "2. Distribución", "2. Distribución"],
+    "Concepto": ["Ingresos Totales", "Gastos Fijos", "Gastos Variables", "Ahorro", "Disponible"],
+    "Euros": [i_total, f_total, v_total, ahorro_obj, max(0, dispo)]
 })
-fig = px.bar(df_graf, x="Concepto", y="Euros", color="Concepto", text_auto=".2f")
+
+fig = px.bar(data_chart, x="Columna", y="Euros", color="Concepto", text_auto=".2f",
+             color_discrete_map={
+                 "Ingresos Totales": "#2ECC71",
+                 "Gastos Fijos": "#E74C3C",
+                 "Gastos Variables": "#F39C12",
+                 "Ahorro": "#3498DB",
+                 "Disponible": "#1ABC9C"
+             })
+fig.update_layout(xaxis_title="", yaxis_title="Euros (€)", showlegend=True)
 st.plotly_chart(fig, use_container_width=True)
 
-# Formulario de registro
+# --- SECCIÓN: REGISTRAR GASTO (SE QUEDA IGUAL) ---
 st.divider()
-st.header("💸 Registrar Gasto")
+st.subheader("💸 Registrar Gasto")
 with st.form("gasto", clear_on_submit=True):
-    col_a, col_b = st.columns([2, 1])
-    con = col_a.text_input("¿En qué has gastado?")
-    mon = col_b.number_input("Euros", min_value=0.0, step=1.0, format="%.2f")
-    if st.form_submit_button("Guardar Gasto"):
-        if con and mon > 0:
-            ws_mov.append_row([hoy.strftime("%Y-%m-%d"), con, "Gasto", mon])
-            st.success("✅ ¡Anotado correctamente!")
+    c_con, c_mon = st.columns([2, 1])
+    concepto = c_con.text_input("¿En qué?")
+    monto = c_mon.number_input("Euros", min_value=0.0, step=1.0)
+    if st.form_submit_button("Guardar Gasto") and concepto and monto > 0:
+        ws_mov.append_row([hoy.strftime("%Y-%m-%d"), concepto, "Gasto", monto])
+        st.success("✅ ¡Anotado!")
+        time.sleep(1)
+        st.rerun()
+
+# --- SECCIÓN: GESTIÓN DE DATOS FIJOS (NUEVA) ---
+st.divider()
+st.subheader("⚙️ Gestión de Datos Fijos")
+exp_ing = st.expander("Modificar Ingresos y % Ahorro")
+with exp_ing:
+    with st.form("edit_ingresos"):
+        st.write("Edita tus fuentes de ingresos actuales:")
+        # Generamos inputs dinámicos basados en el Excel
+        nuevos_ingresos = []
+        for index, row in df_ing.iterrows():
+            val = st.number_input(f"{row[0]} (€)", value=float(num(pd.Series(row[1]))[0]))
+            nuevos_ingresos.append([row[0], val])
+        
+        if st.form_submit_button("Actualizar Ingresos"):
+            ws_ing.update(range_name='A2', values=nuevos_ingresos)
+            st.success("✅ Ingresos actualizados")
             time.sleep(1)
             st.rerun()
 
-# Botón de cierre de sesión en el sidebar
-if st.sidebar.button("🚪 Cerrar Sesión"):
-    st.session_state["autenticado"] = False
-    st.rerun()
+exp_fij = st.expander("Gestionar Gastos Fijos")
+with exp_fij:
+    st.write("Gastos fijos actuales:")
+    st.dataframe(df_fij, use_container_width=True, hide_index=True)
+    
+    col_add, col_del = st.columns(2)
+    with col_add:
+        with st.form("add_fijo", clear_on_submit=True):
+            st.write("➕ Añadir Gasto Fijo")
+            n_fijo = st.text_input("Nombre")
+            i_fijo = st.number_input("Importe", min_value=0.0)
+            if st.form_submit_button("Añadir"):
+                if n_fijo and i_fijo > 0:
+                    ws_fij.append_row([n_fijo, i_fijo])
+                    st.success("Añadido")
+                    time.sleep(1)
+                    st.rerun()
+    
+    with col_del:
+        with st.form("del_fijo"):
+            st.write("🗑️ Borrar Gasto Fijo")
+            opciones = df_fij.iloc[:, 0].tolist() if not df_fij.empty else []
+            seleccion = st.selectbox("Seleccionar", opciones)
+            if st.form_submit_button("Eliminar") and seleccion:
+                # Buscamos la fila y la borramos
+                cell = ws_fij.find(seleccion)
+                ws_fij.delete_rows(cell.row)
+                st.success("Eliminado")
+                time.sleep(1)
+                st.rerun()
+
+# --- BOTÓN DE SALIDA (LINK PEQUEÑO AL FINAL) ---
+st.write("")
+st.write("")
+c_left, c_center, c_right = st.columns([4, 1, 4])
+with c_center:
+    if st.button("Cerrar sesión", type="secondary", use_container_width=False, help="Haz clic para salir"):
+        st.session_state["autenticado"] = False
+        st.rerun()
+st.markdown("<p style='text-align: center; font-size: 0.8rem; color: gray;'>Mi Guardián Financiero &copy; 2024</p>", unsafe_allow_html=True)
