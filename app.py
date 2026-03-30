@@ -14,40 +14,38 @@ st.set_page_config(page_title="Economía Familiar", page_icon="💰", layout="ce
 def check_password():
     if "autenticado" not in st.session_state:
         st.session_state["autenticado"] = False
-
     if not st.session_state["autenticado"]:
         st.title("🔒 Acceso Restringido")
         with st.form("login_form"):
-            usuario_input = st.text_input("Usuario").strip().lower()
-            clave_input = st.text_input("Contraseña", type="password")
-            submit = st.form_submit_button("Entrar")
-            if submit:
-                if "passwords" in st.secrets:
-                    if usuario_input in st.secrets["passwords"] and str(st.secrets["passwords"][usuario_input]) == clave_input:
+            user = st.text_input("Usuario").strip().lower()
+            pw = st.text_input("Contraseña", type="password")
+            if st.form_submit_button("Entrar"):
+                if "passwords" in st.secrets and user in st.secrets["passwords"]:
+                    if str(st.secrets["passwords"][user]) == pw:
                         st.session_state["autenticado"] = True
                         st.rerun()
-                    else:
-                        time.sleep(1)
-                        st.error("❌ Usuario o contraseña incorrectos")
+                st.error("❌ Credenciales incorrectas")
         return False
     return True
 
 if not check_password():
     st.stop()
 
-# --- CONEXIÓN A GOOGLE SHEETS (LIMPIEZA EXTREMA) ---
+# --- CONEXIÓN (CON REPARACIÓN DE LLAVE) ---
 @st.cache_resource
 def conectar_excel():
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         creds_info = dict(st.secrets["gcp_service_account"])
         
-        # LIMPIEZA DE LLAVE: 
-        # 1. Quitamos espacios accidentales al inicio y final de todo el bloque
-        pk = creds_info["private_key"].strip()
-        # 2. Rompemos la llave por líneas, quitamos espacios al final de cada línea y volvemos a unir
-        # Esto soluciona el 99% de los errores de "InvalidPadding"
-        pk = "\n".join([line.strip() for line in pk.split("\n")])
+        # REPARACIÓN MECÁNICA:
+        pk = creds_info["private_key"]
+        # 1. Quitamos los \r (retorno de carro de Windows) que rompen el Padding
+        pk = pk.replace('\r', '')
+        # 2. Aseguramos que los \n de texto se conviertan en saltos reales
+        pk = pk.replace('\\n', '\n')
+        # 3. Limpiamos espacios al final de cada línea
+        pk = "\n".join([line.strip() for line in pk.split("\n") if line.strip()])
         
         creds_info["private_key"] = pk
         
@@ -59,60 +57,55 @@ def conectar_excel():
         return None
 
 sh = conectar_excel()
-if sh is None:
-    st.stop()
+if sh is None: st.stop()
 
 # --- CARGA DE DATOS ---
 try:
-    ws_config = sh.worksheet("Config")
-    df_ingresos = pd.DataFrame(ws_config.get_all_records())
-    ws_fijos = sh.worksheet("Gastos_Fijos")
-    df_fijos = pd.DataFrame(ws_fijos.get_all_records())
-    ws_movimientos = sh.worksheet("Movimientos")
-    df_movimientos = pd.DataFrame(ws_movimientos.get_all_records())
+    ws_mov = sh.worksheet("Movimientos")
+    df_mov = pd.DataFrame(ws_mov.get_all_records())
+    ws_ing = sh.worksheet("Config")
+    df_ing = pd.DataFrame(ws_ing.get_all_records())
+    ws_fij = sh.worksheet("Gastos_Fijos")
+    df_fij = pd.DataFrame(ws_fij.get_all_records())
 except Exception as e:
-    st.error(f"Error al leer el Excel: {e}")
+    st.error(f"Error en pestañas: {e}")
     st.stop()
 
-def limpiar_numeros(serie):
-    return pd.to_numeric(serie.astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
+def num(s): return pd.to_numeric(s.astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
 
-# --- CÁLCULOS ---
-es_ahorro = df_ingresos.iloc[:, 0].astype(str).str.contains("Ahorro|%|Objetivo", case=False, na=False)
-porcentaje_ahorro = limpiar_numeros(pd.Series([df_ingresos.loc[es_ahorro].iloc[0, 1]]))[0] if es_ahorro.any() else 20.0
-total_ingresos = limpiar_numeros(df_ingresos.loc[~es_ahorro].iloc[:, 1]).sum()
-total_fijos = limpiar_numeros(df_fijos['Importe']).sum()
-ahorro_objetivo = total_ingresos * (porcentaje_ahorro / 100)
-gastos_variables = limpiar_numeros(df_movimientos['Importe']).sum() if not df_movimientos.empty else 0
-disponible_mes = total_ingresos - total_fijos - ahorro_objetivo - gastos_variables
+# Cálculos
+ingresos = num(df_ing.iloc[:, 1]).sum()
+fijos = num(df_fij['Importe']).sum()
+variables = num(df_mov['Importe']).sum() if not df_mov.empty else 0
+es_ah = df_ing.iloc[:, 0].astype(str).str.contains("Ahorro|%", case=False, na=False)
+p_ahorro = num(pd.Series([df_ing.loc[es_ah].iloc[0, 1]]))[0] if es_ah.any() else 20.0
+ahorro_obj = ingresos * (p_ahorro / 100)
+disponible = ingresos - fijos - ahorro_obj - variables
 hoy = datetime.now()
 _, u_dia = calendar.monthrange(hoy.year, hoy.month)
 dias_restantes = u_dia - hoy.day + 1
-diario_hoy = disponible_mes / dias_restantes if dias_restantes > 0 else 0
+diario = disponible / dias_restantes if dias_restantes > 0 else 0
 
 # --- INTERFAZ ---
-st.title("🛡️ Mi Guardián Financiero")
+st.title("💰 Economía Familiar")
 c1, c2 = st.columns(2)
-c1.metric("Disponible Mes", f"{disponible_mes:.2f} €")
-c2.metric("Tope para HOY", f"{diario_hoy:.2f} €")
+c1.metric("Disponible Mes", f"{disponible:.2f} €")
+c2.metric("Límite Hoy", f"{diario:.2f} €")
 
 # Gráfico
-df_graf = pd.DataFrame({
-    "Tipo": ["Fijos", "Variables", "Ahorro", "Disponible"],
-    "Euros": [total_fijos, gastos_variables, ahorro_objetivo, max(0, disponible_mes)]
-})
+df_graf = pd.DataFrame({"Tipo": ["Fijos", "Variables", "Ahorro", "Disponible"], 
+                        "Euros": [fijos, variables, ahorro_obj, max(0, disponible)]})
 st.plotly_chart(px.bar(df_graf, x="Tipo", y="Euros", color="Tipo", text_auto=".2s"), use_container_width=True)
 
 # Registro
 st.divider()
 with st.form("gasto", clear_on_submit=True):
-    con = st.text_input("Concepto")
-    mon = st.number_input("Importe (€)", min_value=0.0, step=1.0)
-    if st.form_submit_button("Guardar"):
-        if con and mon > 0:
-            ws_movimientos.append_row([hoy.strftime("%Y-%m-%d"), con, "Otros", mon])
-            st.success("✅ ¡Anotado!")
-            st.rerun()
+    con = st.text_input("¿En qué?")
+    mon = st.number_input("Euros", min_value=0.0, step=1.0)
+    if st.form_submit_button("Guardar Gasto") and con and mon > 0:
+        ws_mov.append_row([hoy.strftime("%Y-%m-%d"), con, "Otros", mon])
+        st.success("✅ ¡Anotado!")
+        st.rerun()
 
 if st.button("🚪 Salir"):
     st.session_state["autenticado"] = False
