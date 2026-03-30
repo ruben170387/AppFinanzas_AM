@@ -6,6 +6,7 @@ from datetime import datetime
 import calendar
 import plotly.express as px
 import time
+import base64  # <--- NUEVA LIBRERÍA
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Economía Familiar", page_icon="💰", layout="centered")
@@ -31,23 +32,19 @@ def check_password():
 if not check_password():
     st.stop()
 
-# --- CONEXIÓN (CON REPARACIÓN DE LLAVE) ---
+# --- CONEXIÓN (MÉTODO BASE64 ANTIFALLOS) ---
 @st.cache_resource
 def conectar_excel():
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         creds_info = dict(st.secrets["gcp_service_account"])
         
-        # REPARACIÓN MECÁNICA:
-        pk = creds_info["private_key"]
-        # 1. Quitamos los \r (retorno de carro de Windows) que rompen el Padding
-        pk = pk.replace('\r', '')
-        # 2. Aseguramos que los \n de texto se conviertan en saltos reales
-        pk = pk.replace('\\n', '\n')
-        # 3. Limpiamos espacios al final de cada línea
-        pk = "\n".join([line.strip() for line in pk.split("\n") if line.strip()])
-        
-        creds_info["private_key"] = pk
+        # Si existe la llave en Base64, la decodificamos
+        if "private_key_base64" in creds_info:
+            b64_key = creds_info["private_key_base64"]
+            # Limpiamos posibles comillas accidentales
+            b64_key = b64_key.strip().strip('"').strip("'")
+            creds_info["private_key"] = base64.b64decode(b64_key).decode("utf-8")
         
         creds = Credentials.from_service_account_info(creds_info, scopes=scope)
         client = gspread.authorize(creds)
